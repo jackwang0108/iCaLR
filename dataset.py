@@ -4,23 +4,22 @@ from typing import *
 
 # Third Party Libray
 import numpy as np
-from colorama import Fore, Style, init
+from colorama import Fore, init
+
 init(autoreset=True)
 
 # Torch Library
 import torch
 import torch.utils.data as data
 
-
 # My Library
-from helper import DatasetPath, PathConfig, visualize, labels, num2label, label2num
-
+from helper import DatasetPath, ProjectPath, visualize, labels, num2label, label2num
 
 
 class Cifar100(data.Dataset):
     __name__ = "Cifar100"
 
-    def __init__(self, split: str, trainval_ratio: float=0.1) -> None:
+    def __init__(self, split: str, trainval_ratio: float = 0.1) -> None:
         super().__init__()
         assert split in (s := ["train", "val", "test"]), f"{Fore.RED}Invalid split: {split}, please select in {s}"
         self.split: str = split
@@ -28,19 +27,26 @@ class Cifar100(data.Dataset):
         self._image, self._label, self.class2idx = self.load(train_val_ratio=trainval_ratio)
 
         self.set_visible_class(labels)
-    
+
     def __len__(self) -> int:
         return len(self.visible_label)
-    
+
     def __getitem__(self, index: Any) -> Tuple[torch.Tensor, torch.Tensor]:
-        image, label =  self.visible_image[index], self.visible_label[index]
+        image, label = self.visible_image[index], self.visible_label[index]
         return image, label
 
-    def set_visible_class(self, visible_class: Union[List[int], List[str]]):
+    def set_visible_class(self, visible_class: Union[int, str, List[int], List[str]]):
+        """
+        set_visible_class will set visible images of given classes
+
+        Args:
+            visible_class (Union[int, str, List[int], List[str]]): visiable class
+        """
         visible_class = [visible_class] if isinstance(visible_class, (int, str)) else visible_class
         _check = [type(i).__name__ for i in visible_class]
-        assert len(s:=np.unique(_check)), f"all object in the visible should be same type, but you offer mixed types: {s}"
-        
+        assert len(
+            s := np.unique(_check)), f"all object in the visible should be same type, but you offer mixed types: {s}"
+
         # get converter
         if s[0] == "str":
             _converter = lambda cls: self.class2idx[label2num[cls]]
@@ -51,12 +57,11 @@ class Cifar100(data.Dataset):
         for cls in visible_class:
             visible_class_idx.append(_converter(cls))
         visible_class_idx = torch.concat(visible_class_idx)
-        
+
         # set visible image and label
         self.visible_image, self.visible_label = self._image[visible_class_idx], self._label[visible_class_idx]
 
-    
-    def load(self, train_val_ratio: float)  -> Tuple[torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]:
+    def load(self, train_val_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]:
         # same as normal classification
         if self.split == "test":
             with DatasetPath.Cifar100.test.open(mode="rb") as f:
@@ -82,7 +87,7 @@ class Cifar100(data.Dataset):
             label: torch.Tensor = torch.from_numpy(np.array(train_data[b"fine_labels"])).long()
 
             # decide for train and val
-            if not (p:=PathConfig.base.joinpath("train_val.npz")).exists():
+            if not (p := ProjectPath.base.joinpath("train_val.npz")).exists():
                 # generate train and val split
                 val_num = int(len(image) * train_val_ratio)
                 idx = np.arange(len(image))
@@ -92,13 +97,13 @@ class Cifar100(data.Dataset):
             else:
                 z = np.load(p)
                 val_idx, train_idx = z["val"], z["train"]
-            
+
             # get train/val data and label
             if self.split == "train":
                 image, label = image[train_idx], label[train_idx]
             else:
                 image, label = image[val_idx], label[val_idx]
-        
+
         # get num2idx dict
         class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
 
@@ -109,9 +114,47 @@ class Cifar100(data.Dataset):
         raise NotImplementedError
 
 
+class ExamplarSets(data.Dataset):
+    def __init__(self, K: int) -> None:
+        super().__init__()
+        self.maximum_size: int = K
+        # {class: (example_x, example_y)}
+        self.examplar_set: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+
+        # temp batchs
+        self._temp_batchs: Dict[str, List[torch.Tensor]] = {"image": [], "label": []}
+
+        self.new_image: torch.Tensor = torch.zeros(0)
+        self.new_label: torch.Tensor = torch.zeros(0)
+
+    def __len__(self):
+        return
+
+    def __getitem__(self, index: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+        return super().__getitem__(index)
+
+    def add_batch(self, batch_x: torch.Tensor, batch_y: torch.Tensor):
+        self._temp_batchs["images"].append(batch_x.clone().detach().cpu())
+        self._temp_batchs["label"].append(batch_y.clone().detach().cpu())
+
+    def combine(self):
+        self.new_image = torch.concat(self._temp_batchs["images"], dim=0)
+        self.new_label = torch.concat(self._temp_batchs["label"], dim=0)
+
+    @torch.no_grad()
+    def construct_examplar_set(self):
+        pass
+
+    def reduce_examplar_set(self):
+        pass
+
+
 if __name__ == "__main__":
+    import pprint
+
+    pprint.pprint(labels[:5])
     c100 = Cifar100(split="train")
-    c100.set_visible_class(labels[9])
+    c100.set_visible_class(labels[:5])
 
     # check loader and image
     from PIL import Image
@@ -120,5 +163,6 @@ if __name__ == "__main__":
     loader = data.DataLoader(c100, batch_size=64, shuffle=True)
     for image, label in loader:
         a = visualize(image, label)
+        print(a.shape)
         a = Image.fromarray(a).show()
         break
