@@ -13,10 +13,11 @@ import matplotlib.pyplot as plt
 from matplotlib import figure, axes
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
-os.environ["KMP_DUPLICATE_LIB_OK"]  =  "TRUE"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Select System
 system = platform.uname().system
+
 
 # Decide Path
 # Path: Union[PosixPath, WindowsPath]
@@ -28,8 +29,7 @@ system = platform.uname().system
 #     raise NotImplementedError
 
 
-
-class PathConfig:
+class ProjectPath:
     base: Path = Path(__file__).resolve().parent
     logs: Path = base.joinpath("logs")
     datasets: Path = base.joinpath("datasets")
@@ -41,9 +41,9 @@ class DatasetPath:
         global system
         base: Path
         if system == "Windows":
-            base = PathConfig.datasets.joinpath("cifar100-windows")
+            base = ProjectPath.datasets.joinpath("cifar100-windows")
         elif system == "Linux":
-            base = PathConfig.datasets.joinpath("cifar100-linux")
+            base = ProjectPath.datasets.joinpath("cifar100-linux")
         meta: Path = base.joinpath("meta")
         test: Path = base.joinpath("test")
         train: Path = base.joinpath("train")
@@ -52,9 +52,9 @@ class DatasetPath:
         global system
         base: Path
         if system == "Windows":
-            base = PathConfig.datasets.joinpath("tinyimagenet-windows")
+            base = ProjectPath.datasets.joinpath("tinyimagenet-windows")
         elif system == "Linux":
-            base = PathConfig.datasets.joinpath("tinyimagenet-linux")
+            base = ProjectPath.datasets.joinpath("tinyimagenet-linux")
         train: Path = base.joinpath("train")
         val: Path = base.joinpath("val")
         test: Path = base.joinpath("test")
@@ -93,7 +93,18 @@ class Evaluator:
         pass
 
 
-def visualize(image: Union[torch.Tensor, np.ndarray], cls: Union[None, int, str, torch.Tensor, np.ndarray] = None):
+def visualize(image: Union[torch.Tensor, np.ndarray],
+              cls: Union[None, int, str, torch.Tensor, np.ndarray] = None) -> np.ndarray:
+    """
+    visualize will visualize given image(s) and return a grid of all given image(s) with label(s) (if provided)
+
+    Args:
+        image (Union[torch.Tensor, np.ndarray]): images to display, should be in the shape of [channel, width, height] or [batch, channel, width, height]
+        cls (Union[None, int, str, torch.Tensor, np.ndarray], optional): label(s) of all given image(s). Defaults to None.
+
+    Returns:
+        np.ndarray: rendered iamges ([height, width, channel]), can be display by PIL or matplotlib
+    """
     num = 1 if image.ndim == 3 else image.shape[0]
     cls = np.array([""] * num) if cls is None else cls
     cls = np.array([cls]) if isinstance(cls, (int, str)) else cls
@@ -107,8 +118,9 @@ def visualize(image: Union[torch.Tensor, np.ndarray], cls: Union[None, int, str,
     if image.ndim == 3:
         image = image.unsqueeze(0)
 
-    assert image.shape[1] == 3, f"shape of image should be [batch_size, channel, width, height] or [channel, width, height]"
-    image = image.permute(0, 2, 3 ,1)
+    assert image.shape[
+               1] == 3, f"shape of image should be [batch_size, channel, width, height] or [channel, width, height]"
+    image = image.permute(0, 2, 3, 1)
 
     cols = int(np.sqrt(num))
     rows = num // cols + (0 if num % cols == 0 else 1)
@@ -144,6 +156,19 @@ def visualize(image: Union[torch.Tensor, np.ndarray], cls: Union[None, int, str,
     return np.frombuffer(canvas.tostring_rgb(), dtype='uint8').reshape(fig.canvas.get_width_height()[::-1] + (3,))
 
 
+def legal_converter(path: Path):
+    global system
+    if system == "Windows":
+        illegal_char = ["<", ">", ":", "\"", "'", "/", "\\", "|", "?", "*"]
+    elif system == "Linux":
+        illegal_char = ["\\"]
+    relative_path: List[str] = list(str(path.relative_to(ProjectPath.base)).split("\\"))
+    for idx in range(len(relative_path)):
+        for cc in illegal_char:
+            relative_path[idx] = relative_path[idx].replace(cc, "_")
+    return ProjectPath.base.joinpath(*relative_path)
+
+
 if __name__ == "__main__":
     # check paths
     # dp = DatasetPath()
@@ -155,7 +180,15 @@ if __name__ == "__main__":
     #         print(p, p.exists())
 
     # check labels
-    import pprint
-    pprint.pprint(labels)
-    pprint.pprint(label2num)
-    pprint.pprint(num2label)
+    # import pprint
+    #
+    # pprint.pprint(labels)
+    # pprint.pprint(label2num)
+    # pprint.pprint(num2label)
+
+    # test legal_converter
+    import datetime
+    from network import ResNet34
+
+    lc = legal_converter(ProjectPath.runs / ResNet34.__name__ / str(datetime.datetime.now()))
+    print(lc)
