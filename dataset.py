@@ -19,12 +19,12 @@ from helper import DatasetPath, ProjectPath, visualize, labels, num2label, label
 class Cifar100(data.Dataset):
     __name__ = "Cifar100"
 
-    def __init__(self, split: str, trainval_ratio: float = 0.1) -> None:
+    def __init__(self, split: str, trainval_ratio: float = 0.1, refresh: bool = False) -> None:
         super().__init__()
         assert split in (s := ["train", "val", "test"]), f"{Fore.RED}Invalid split: {split}, please select in {s}"
         self.split: str = split
 
-        self._image, self._label, self.class2idx = self.load(train_val_ratio=trainval_ratio)
+        self._image, self._label, self.class2idx = self.load(train_val_ratio=trainval_ratio, refresh=refresh)
 
         self.set_visible_class(labels)
 
@@ -61,7 +61,7 @@ class Cifar100(data.Dataset):
         # set visible image and label
         self.visible_image, self.visible_label = self._image[visible_class_idx], self._label[visible_class_idx]
 
-    def load(self, train_val_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]:
+    def load(self, train_val_ratio: float, refresh: bool) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]:
         # same as normal classification
         if self.split == "test":
             with DatasetPath.Cifar100.test.open(mode="rb") as f:
@@ -74,6 +74,9 @@ class Cifar100(data.Dataset):
                 test_data = pickle.load(f, encoding="bytes")
             image: torch.Tensor = torch.from_numpy(test_data[b"data"]).reshape(-1, 3, 32, 32).float() / 255
             label: torch.Tensor = torch.from_numpy(np.array(test_data[b"fine_labels"])).long()
+
+            # get num2idx dict
+            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
         else:
             with DatasetPath.Cifar100.train.open(mode="rb") as f:
                 # {b"filenames": List[bytes], 
@@ -86,26 +89,36 @@ class Cifar100(data.Dataset):
             image: torch.Tensor = torch.from_numpy(train_data[b"data"]).reshape(-1, 3, 32, 32).float() / 255
             label: torch.Tensor = torch.from_numpy(np.array(train_data[b"fine_labels"])).long()
 
+            # get num2idx dict
+            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
+
             # decide for train and val
-            if not (p := ProjectPath.base.joinpath("train_val.npz")).exists():
-                # generate train and val split
-                val_num = int(len(image) * train_val_ratio)
-                idx = np.arange(len(image))
-                np.random.shuffle(idx)
-                val_idx, train_idx = idx[:val_num], idx[val_num:]
+            if not (p := ProjectPath.base.joinpath("train_val.npz")).exists() or refresh:
+                # generate train and val split for each class
+                train_idx = {}
+                val_idx = {}
+                for class_num, per_class_idx in class2idx.items():
+                    val_num = int(len(per_class_idx) * train_val_ratio)
+                    idx = np.arange(len(per_class_idx))
+                    np.random.shuffle(idx)
+                    val_idx[class_num], train_idx[class_num] = idx[:val_num], idx[val_num:]
                 np.savez(p, val=val_idx, train=train_idx)
             else:
-                z = np.load(p)
+                z = np.load(p, allow_pickle=True)
                 val_idx, train_idx = z["val"], z["train"]
 
             # get train/val data and label
             if self.split == "train":
+                train_idx = train_idx if isinstance(train_idx, dict) else train_idx.item()
+                train_idx = np.concatenate(list(train_idx.values()), axis=0)
                 image, label = image[train_idx], label[train_idx]
             else:
+                val_idx = val_idx if isinstance(val_idx, dict) else val_idx.item()
+                val_idx = np.concatenate(list(val_idx.values()), axis=0)
                 image, label = image[val_idx], label[val_idx]
 
-        # get num2idx dict
-        class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
+            # update num2idx dict
+            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
 
         return image, label, class2idx
 
@@ -153,8 +166,9 @@ if __name__ == "__main__":
     import pprint
 
     pprint.pprint(labels[:5])
-    c100 = Cifar100(split="train")
-    c100.set_visible_class(labels[:5])
+    # c100 = Cifar100(split="train", refresh=True)
+    c100 = Cifar100(split="val")
+    c100.set_visible_class(labels[0])
 
     # check loader and image
     from PIL import Image
