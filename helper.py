@@ -9,14 +9,19 @@ from pathlib import PosixPath, WindowsPath, Path
 import PIL
 import torch
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+from colorama import Fore, init
+from terminaltables import SingleTable
 from matplotlib import figure, axes
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+init(autoreset=True)
+
 # Select System
-system = platform.uname().system
+system: str = platform.uname().system
 
 
 # Decide Path
@@ -34,6 +39,12 @@ class ProjectPath:
     logs: Path = base.joinpath("logs")
     datasets: Path = base.joinpath("datasets")
     runs: Path = base.joinpath("runs")
+    checkpoints: Path = base.joinpath("checkpoints")
+
+
+for attr in ProjectPath.__dict__.values():
+    if isinstance(attr, Path):
+        attr.mkdir(parents=True, exist_ok=True)
 
 
 class DatasetPath:
@@ -68,17 +79,170 @@ class DatasetPath:
 # load label
 with DatasetPath.Cifar100.meta.open(mode="rb") as f:
     meta: Dict[str, Any] = pickle.load(f)
-labels = meta["fine_label_names"]
-label2num = dict(zip(labels, range(len(labels))))
-num2label = dict(zip(label2num.values(), label2num.keys()))
+cifar100_labels = meta["fine_label_names"]
+cifar100_label2num = dict(zip(cifar100_labels, range(len(cifar100_labels))))
+cifar100_num2label = dict(zip(cifar100_label2num.values(), cifar100_label2num.keys()))
 
 
-class Evaluator:
+# 多分类评价指标从confusion matrix中计算参考: https://zhuanlan.zhihu.com/p/147663370
+class ClassificationEvaluator:
+    def __init__(self, num_class: int) -> None:
+        self._num_class = num_class
+        # rows: ground truth class, cols: predicted class
+        self.top1_confusion_matrix = np.zeros(shape=(num_class, num_class))
+        self.top5_confusion_matrix = np.zeros(shape=(num_class, num_class))
+
+        # register measurement
+        self._measure: Dict[str, Callable] = {
+            "accuracy": self.accuracy,
+            "precision": self.precision,
+            "recall": self.recall
+        }
+
+    def add_batch_top1(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]):
+        """
+        batch_confusion_matrix is used to compute the confusion matrix of a batch
+        Args:
+            labels: Prediction labels of points with shape of [batch]
+            num_classes: Ground truth labels of points with shape of [batch] or [batch, ]
+        Returns:
+            confusion matrix, represented by a tensor of [batch, num_classes, num_classes]
+        """
+        # check type
+        assert isinstance(y_pred, (torch.Tensor, np.ndarray)), f"Not suppported type for pred_y: {type(y_pred)}"
+        assert isinstance(y, (torch.Tensor, np.ndarray)), f"Not suppported type for y: {type(y)}"
+        # check length
+        assert (a:=len(y_pred)) == (b:=len(y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
+        y_pred = y_pred if isinstance(y_pred, np.ndarray) else y_pred.detach().to(device="cpu").numpy()
+        y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
+
+        # construc batch confusion matrix and add to self.confusion_matrix
+        k = (y >= 0) & (y < self._num_class)
+
+        # convert [batch, num_class] prediction scores to [batch] prediction results
+        y_pred_cls = (y_pred if y_pred.ndim == 1 else y_pred.argmax(axis=1)).squeeze()
+
+        confusion_matrix: np.ndarray
+        # bincount for fast classification confusion matrix
+        confusion_matrix = np.bincount(
+            self._num_class * y.astype(int) + y_pred_cls.astype(int),
+            minlength=self._num_class ** 2
+        ).reshape(self._num_class, self._num_class)
+        self.top1_confusion_matrix += confusion_matrix
+        return confusion_matrix
+
+    def add_batch_top5(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]):
+        """
+        batch_confusion_matrix is used to compute the confusion matrix of a batch
+        Args:
+            labels: Prediction labels of points with shape of [batch]
+            num_classes: Ground truth labels of points with shape of [batch] or [batch, ]
+        Returns:
+            confusion matrix, represented by a tensor of [batch, num_classes, num_classes]
+        """
+        # check type
+        assert isinstance(y_pred, (torch.Tensor, np.ndarray)), f"Not suppported type for pred_y: {type(y_pred)}"
+        assert isinstance(y, (torch.Tensor, np.ndarray)), f"Not suppported type for y: {type(y)}"
+        # check length
+        assert (a:=len(y_pred)) == (b:=len(y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
+        # check input
+        assert y_pred.ndim == 2, f"For top5 evaluation, you should input [batch, class_score] tensor or ndarray, but you offered: {y_pred.shape}"
+        y_pred = y_pred if isinstance(y_pred, np.ndarray) else y_pred.detach().to(device="cpu").numpy()
+        y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
+
+        # construc batch confusion matrix and add to self.confusion_matrix
+        k = (y >= 0) & (y < self._num_class)
+
+        # this could be done by torch.Tensor.topk, but for numpy, argsort is O(NlongN), following is a O(N) implementation
+        # [1st, 2st, ..., 5st]
+        y_pred_cls = np.argpartition(y_pred, kth=-5, axis=1)[:, -5:][:, ::-1]
+
+        correct_mask = (y[:, np.newaxis] == y_pred_cls).any(axis=1)
+        pred_yy = np.zeros_like(y)
+        pred_yy[correct_mask] = y[correct_mask]
+        pred_yy[~correct_mask] = y_pred_cls[~correct_mask, 0]
+
+        confusion_matrix: np.ndarray
+        # bincount for fast classification confusion matrix
+        confusion_matrix = np.bincount(
+            self._num_class * y.astype(int) + pred_yy.astype(int),
+            minlength=self._num_class ** 2
+        ).reshape(self._num_class, self._num_class)
+        self.top5_confusion_matrix += confusion_matrix
+        return confusion_matrix
+    
+    def accuracy(self, top: int = 5) -> np.float64:
+
+        assert top in [1, 5], f"Only support for top1 and top5"
+        confusion_matrix: np.ndarray =  self.__getattribute__(f"top{top}_confusion_matrix")
+
+        acc: np.ndarray = confusion_matrix.trace() / confusion_matrix.sum()
+        return acc
+
+    def precision(self, top: int = 5) -> Tuple[np.ndarray, np.float64]:
+
+        assert top in [1, 5], f"Only support for top1 and top5"
+        confusion_matrix: np.ndarray =  self.__getattribute__(f"top{top}_confusion_matrix")
+
+        # ignore zero division error, invalid division warning
+        with np.errstate(divide="ignore", invalid="ignore"):
+            per_class_precision: np.ndarray = confusion_matrix.diagonal() / confusion_matrix.sum(axis=0)
+            per_class_precision[np.isnan(per_class_precision)] = 0
+        mean_precision = per_class_precision.mean()
+        return per_class_precision, mean_precision
+
+    def recall(self, top: int = 5):
+        assert top in [1, 5], f"Only support for top1 and top5"
+        confusion_matrix: np.ndarray =  self.__getattribute__(f"top{top}_confusion_matrix")
+
+        # ignore zero division error, invalid division warning
+        with np.errstate(divide="ignore", invalid="ignore"):
+            per_class_recall: np.ndarray = confusion_matrix.diagonal() / confusion_matrix.sum(axis=1)
+            per_class_recall[np.isnan(per_class_recall)] = 0
+        mean_recall = per_class_recall.mean()
+        return per_class_recall, mean_recall
+    
+    def new_epoch(self):
+        self.top1_confusion_matrix = np.zeros(shape=(self._num_class, self._num_class))
+        self.top5_confusion_matrix = np.zeros(shape=(self._num_class, self._num_class))
+    
+    def make_grid(self, title: str, labels: List[str], top: int = 5):
+        assert len(labels) == self._num_class, f"Evaluator is initialized with {self._num_class} classes, but reveive only {len(labels)} labels."
+        data = []
+        index = []
+        column = labels + ["Mean"]
+        last_col = []
+        for measure_name, meansure in self._measure.items():
+            index.append(measure_name)
+            result = meansure(top=top)
+            if isinstance(result, tuple):
+                a = np.random.randn(10, 10)
+                np.round(a,)
+                data.append(np.round(result[0], decimals=4))
+                last_col.append(np.round(result[1], decimals=4))
+            else:
+                data.append(np.array(["---"] * (len(column) - 1)))
+                last_col.append(np.round(result, decimals=4))
+        data = np.array(data)
+        last_col = np.array(last_col)[:, np.newaxis]
+        df = pd.DataFrame(np.hstack((data, last_col)), index=index, columns=column).T
+        data = df.to_numpy()
+        index = df.index.to_numpy()
+        column = df.columns.tolist()
+        data = np.hstack((index[:, np.newaxis], data)).tolist()
+        column.insert(0, "class")
+        data.insert(0, column)
+        data[-1] = [f"{Fore.BLUE}{i}{Fore.RESET}" for i in data[-1]]
+        table = SingleTable(data)
+        table.title = title + f" top {top}"
+        return table.table
+
+
+
+class CLEvaluator(ClassificationEvaluator):
     def __init__(self):
         pass
 
-    def add_batch(self):
-        pass
 
     def BWT(self):
         pass
@@ -128,7 +292,7 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
     if isinstance(cls[0], str):
         converter = lambda x: x
     else:
-        converter = lambda x: num2label[x]
+        converter = lambda x: cifar100_num2label[x]
 
     ax: List[axes.Axes]
     fig: figure.Figure
@@ -187,8 +351,26 @@ if __name__ == "__main__":
     # pprint.pprint(num2label)
 
     # test legal_converter
-    import datetime
-    from network import ResNet34
+    # import datetime
+    # from network import ResNet34
 
-    lc = legal_converter(ProjectPath.runs / ResNet34.__name__ / str(datetime.datetime.now()))
-    print(lc)
+    # lc = legal_converter(ProjectPath.runs / ResNet34.__name__ / str(datetime.datetime.now()))
+    # print(lc)
+
+    # test evaluator
+    ce = ClassificationEvaluator(num_class=10)
+    y = np.repeat(np.arange(0, 10)[np.newaxis, :], repeats=10).flatten()
+    pred_y = np.zeros(shape=(100))
+    # top1
+    # ce.add_batch(pred_y=pred_y, y=y)
+    # ce.add_batch_top1(y_pred=y, y=y)
+    # top5
+    pred_y = np.random.random(size=(100, 10))
+    ce.add_batch_top1(y_pred=pred_y, y=y)
+    ce.add_batch_top5(y_pred=pred_y, y=y)
+
+    print(ce.accuracy(top=1))
+    print(ce.accuracy(top=5))
+    print(ce.precision(top=1))
+
+    # print(ce.make_grid(title="Epoch 1", top=1, labels=cifar100_labels[:10]))
