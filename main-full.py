@@ -89,7 +89,11 @@ class FullTrainer:
             for step, (x, y) in enumerate(train_loader):
                 # do not change y from long to float
                 # the following line takes about 84.7% time to run, so it's better to set pin_memory and non_blocking to True
-                x, y = x.to(dtype=self.default_dtype, device=self.available_device), y.to(device=self.available_device)
+                x = x.to(dtype=self.default_dtype)
+                if self.available_device != "cpu":
+                    x, y = x.cuda(), y.cuda()
+                # !!! don't forget
+                self.optim.zero_grad()
                 y_pred = self.network(x)
                 loss = self.loss_func(y_pred, y)
                 loss.backward()
