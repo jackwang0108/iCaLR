@@ -13,7 +13,7 @@ import torch
 import torch.utils.data as data
 
 # My Library
-from helper import DatasetPath, ProjectPath, visualize, labels, num2label, label2num
+from helper import DatasetPath, ProjectPath, visualize, cifar100_labels, cifar100_num2label, cifar100_label2num
 
 
 class Cifar100(data.Dataset):
@@ -26,7 +26,7 @@ class Cifar100(data.Dataset):
 
         self._image, self._label, self.class2idx = self.load(train_val_ratio=trainval_ratio, refresh=refresh)
 
-        self.set_visible_class(labels)
+        self.set_visible_class(cifar100_labels)
 
     def __len__(self) -> int:
         return len(self.visible_label)
@@ -49,7 +49,7 @@ class Cifar100(data.Dataset):
 
         # get converter
         if s[0] == "str":
-            _converter = lambda cls: self.class2idx[label2num[cls]]
+            _converter = lambda cls: self.class2idx[cifar100_label2num[cls]]
         else:
             _converter = lambda cls: self.class2idx[cls]
 
@@ -76,7 +76,7 @@ class Cifar100(data.Dataset):
             label: torch.Tensor = torch.from_numpy(np.array(test_data[b"fine_labels"])).long()
 
             # get num2idx dict
-            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
+            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in cifar100_num2label.keys()}
         else:
             with DatasetPath.Cifar100.train.open(mode="rb") as f:
                 # {b"filenames": List[bytes], 
@@ -90,7 +90,7 @@ class Cifar100(data.Dataset):
             label: torch.Tensor = torch.from_numpy(np.array(train_data[b"fine_labels"])).long()
 
             # get num2idx dict
-            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
+            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in cifar100_num2label.keys()}
 
             # decide for train and val
             if not (p := ProjectPath.base.joinpath("train_val.npz")).exists() or refresh:
@@ -118,7 +118,7 @@ class Cifar100(data.Dataset):
                 image, label = image[val_idx], label[val_idx]
 
             # update num2idx dict
-            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in num2label.keys()}
+            class2idx: Dict[int, torch.Tensor] = {i: torch.where(label == i)[0] for i in cifar100_num2label.keys()}
 
         return image, label, class2idx
 
@@ -165,10 +165,10 @@ class ExamplarSets(data.Dataset):
 if __name__ == "__main__":
     import pprint
 
-    pprint.pprint(labels[:5])
+    pprint.pprint(cifar100_labels[:5])
     # c100 = Cifar100(split="train", refresh=True)
     c100 = Cifar100(split="val")
-    c100.set_visible_class(labels[0])
+    c100.set_visible_class(cifar100_labels[0])
 
     # check loader and image
     from PIL import Image
