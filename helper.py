@@ -77,18 +77,22 @@ class DatasetPath:
 
 
 # load label
-with DatasetPath.Cifar100.meta.open(mode="rb") as f:
-    meta: Dict[str, Any] = pickle.load(f)
-cifar100_labels = meta["fine_label_names"]
-cifar100_label2num = dict(zip(cifar100_labels, range(len(cifar100_labels))))
-cifar100_num2label = dict(zip(cifar100_label2num.values(), cifar100_label2num.keys()))
+class Cifar100Labels:
 
-def shuffle():
-    import random
-    global cifar100_labels, cifar100_num2label, cifar100_label2num
-    random.shuffle(cifar100_labels)
-    cifar100_label2num = dict(zip(cifar100_labels, range(len(cifar100_labels))))
-    cifar100_num2label = dict(zip(cifar100_label2num.values(), cifar100_label2num.keys()))
+    def __init__(self) -> None:
+        with DatasetPath.Cifar100.meta.open(mode="rb") as f:
+            meta: Dict[str, Any] = pickle.load(f)
+        self.cifar100_labels = meta["fine_label_names"]
+        self.cifar100_label2num = dict(zip(self.cifar100_labels, range(len(self.cifar100_labels))))
+        self.cifar100_num2label = dict(zip(self.cifar100_label2num.values(), self.cifar100_label2num.keys()))
+
+    def shuffle(self):
+        import random
+        random.shuffle(self.cifar100_labels)
+        self.cifar100_label2num = dict(zip(self.cifar100_labels, range(len(self.cifar100_labels))))
+        self.cifar100_num2label = dict(zip(self.cifar100_label2num.values(), self.cifar100_label2num.keys()))
+
+cifar100_labels = Cifar100Labels()
 
 # 多分类评价指标从confusion matrix中计算参考: https://zhuanlan.zhihu.com/p/147663370
 # 这里太麻烦了, 就没有使用
@@ -362,7 +366,7 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
     if isinstance(cls[0], str):
         converter = lambda x: x
     else:
-        converter = lambda x: cifar100_num2label[x]
+        converter = lambda x: cifar100_labels.cifar100_num2label[x]
 
     ax: List[axes.Axes]
     fig: figure.Figure
