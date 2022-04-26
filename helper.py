@@ -83,8 +83,15 @@ cifar100_labels = meta["fine_label_names"]
 cifar100_label2num = dict(zip(cifar100_labels, range(len(cifar100_labels))))
 cifar100_num2label = dict(zip(cifar100_label2num.values(), cifar100_label2num.keys()))
 
+def shuffle():
+    import random
+    global cifar100_labels, cifar100_num2label, cifar100_label2num
+    random.shuffle(cifar100_labels)
+    cifar100_label2num = dict(zip(cifar100_labels, range(len(cifar100_labels))))
+    cifar100_num2label = dict(zip(cifar100_label2num.values(), cifar100_label2num.keys()))
 
 # 多分类评价指标从confusion matrix中计算参考: https://zhuanlan.zhihu.com/p/147663370
+# 这里太麻烦了, 就没有使用
 class ClassificationEvaluator:
     def __init__(self, num_class: int) -> None:
         self._num_class = num_class
@@ -99,7 +106,7 @@ class ClassificationEvaluator:
             "recall": self.recall
         }
 
-    def add_batch_top1(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]):
+    def add_batch_top1(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray], seen_class:int=0):
         """
         batch_confusion_matrix is used to compute the confusion matrix of a batch
         Args:
@@ -117,7 +124,9 @@ class ClassificationEvaluator:
         y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
 
         # construc batch confusion matrix and add to self.confusion_matrix
-        k = (y >= 0) & (y < self._num_class)
+        k_y = (y >= seen_class) & (y < self._num_class + seen_class)
+        k_y_pred = (y_pred >= seen_class) & (y_pred < self._num_class + seen_class)
+        k = k_y & k_y_pred
 
         # convert [batch, num_class] prediction scores to [batch] prediction results
         y_pred_cls = (y_pred if y_pred.ndim == 1 else y_pred.argmax(axis=1)).squeeze()
@@ -125,13 +134,13 @@ class ClassificationEvaluator:
         confusion_matrix: np.ndarray
         # bincount for fast classification confusion matrix
         confusion_matrix = np.bincount(
-            self._num_class * y.astype(int) + y_pred_cls.astype(int),
+            self._num_class * y[k].astype(int) + y_pred_cls[k].astype(int),
             minlength=self._num_class ** 2
         ).reshape(self._num_class, self._num_class)
         self.top1_confusion_matrix += confusion_matrix
         return confusion_matrix
 
-    def add_batch_top5(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]):
+    def add_batch_top5(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray], seen_class: int=0):
         """
         batch_confusion_matrix is used to compute the confusion matrix of a batch
         Args:
@@ -151,11 +160,21 @@ class ClassificationEvaluator:
         y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
 
         # construc batch confusion matrix and add to self.confusion_matrix
-        k = (y >= 0) & (y < self._num_class)
+        k_y = (y >= seen_class) & (y < self._num_class + seen_class)
+        k_y_pred = (y_pred >= seen_class) & (y_pred < self._num_class + seen_class)
+        if k_y_pred.ndim == 2:
+            k = (k_y_pred & k_y[:, np.newaxis]).all(axis=1)
+        else:
+            k = k_y_pred & k_y
 
         # this could be done by torch.Tensor.topk, but for numpy, argsort is O(NlongN), following is a O(N) implementation
         # [1st, 2st, ..., 5st]
-        y_pred_cls = np.argpartition(y_pred, kth=-5, axis=1)[:, -5:][:, ::-1]
+        if y_pred.shape[1] > 5:
+            y_pred_cls = np.argpartition(y_pred, kth=-5, axis=1)[:, -5:][:, ::-1]
+        elif y_pred.shape[1] == 5:
+            y_pred_cls = y_pred
+        else:
+            assert False, f"{Fore.RED}Error prediction, mimum 5 precition each example, but you offered {y_pred.shape}"
 
         correct_mask = (y[:, np.newaxis] == y_pred_cls).any(axis=1)
         pred_yy = np.zeros_like(y)
@@ -165,7 +184,7 @@ class ClassificationEvaluator:
         confusion_matrix: np.ndarray
         # bincount for fast classification confusion matrix
         confusion_matrix = np.bincount(
-            self._num_class * y.astype(int) + pred_yy.astype(int),
+            self._num_class * y[k].astype(int) + pred_yy[k].astype(int),
             minlength=self._num_class ** 2
         ).reshape(self._num_class, self._num_class)
         self.top5_confusion_matrix += confusion_matrix
@@ -175,9 +194,9 @@ class ClassificationEvaluator:
 
         assert top in [1, 5], f"Only support for top1 and top5"
         confusion_matrix: np.ndarray =  self.__getattribute__(f"top{top}_confusion_matrix")
-
-        acc: np.ndarray = confusion_matrix.trace() / confusion_matrix.sum()
-        return acc
+        with np.errstate(divide='ignore', invalid='ignore'):
+            acc: np.ndarray = confusion_matrix.trace() / confusion_matrix.sum()
+        return np.nan_to_num(acc)
 
     def precision(self, top: int = 5) -> Tuple[np.ndarray, np.float64]:
 
@@ -239,22 +258,72 @@ class ClassificationEvaluator:
 
 
 
-class CLEvaluator(ClassificationEvaluator):
-    def __init__(self):
-        pass
+class ContinualLearningEvaluator:
+    def __init__(self, num_task: int):
+        self._num_task = num_task
+
+        self.top1_R = np.zeros(shape=(num_task, num_task))
+        self.top5_R = np.zeros(shape=(num_task, num_task))
+
+        self.overall_task: List[Tuple[str]] = []
+
+    def after_new_task(self, task: Union[str, Tuple[int]]):
+        if isinstance(task, str):
+            self.overall_task.append(tuple(task))
+        elif isinstance(task, tuple):
+            self.overall_task.append(task)
+        else:
+            assert False, f"{Fore.RED}Invalid type: {type(task)}"
+        self.top1_R = np.zeros(shape=(self._num_task, self._num_task))
+        self.top5_R = np.zeros(shape=(self._num_task, self._num_task))
+
+    def start_test_task(self, task: Union[str, Tuple[int, str]], test_task_idx: int):
+        self._top1_classification_evaluator = ClassificationEvaluator(num_class=len(task))
+        self._top5_classification_evaluator = ClassificationEvaluator(num_class=len(task))
+        self._test_task_idx = test_task_idx
+    
+    def end_test_task(self):
+        self.top1_R[len(self.overall_task)-1, self._test_task_idx] = self._top1_classification_evaluator.accuracy(top=1)
+        if self.if_top5:
+            self.top5_R[len(self.overall_task)-1, self._test_task_idx] = self._top5_classification_evaluator.accuracy(top=5)
+        else:
+            return 0
+    
+    def add_batch(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]):
+        self.if_top5 = True if y_pred.shape[1] >= 5 else False
+        # check type
+        assert isinstance(y_pred, (torch.Tensor, np.ndarray)), f"{Fore.RED}Not suppported type for pred_y: {type(y_pred)}"
+        assert isinstance(y, (torch.Tensor, np.ndarray)), f"Not suppported type for y: {type(y)}"
+        # check length
+        assert (a:=len(y_pred)) == (b:=len(y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
+        # check input
+        assert y_pred.ndim == 2, f"For both top1 and top5 evaluation, you should input [batch, pred_cls(5)] tensor or ndarray, but you offered: {y_pred.shape}"
+        y_pred = y_pred if isinstance(y_pred, np.ndarray) else y_pred.detach().to(device="cpu").numpy()
+        y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
+
+        top1_pred = y_pred[:, 0]
+        top5_pred = y_pred[:, :]
+
+        self._top1_classification_evaluator.add_batch_top1(y_pred=top1_pred, y=y)
+        if top5_pred.shape[1] >= 5:
+            self._top5_classification_evaluator.add_batch_top5(y_pred=top5_pred, y=y)
 
 
-    def BWT(self):
-        pass
+    def BWT(self, top: int = 1):
+        t = len(self.overall_task)
+        r: np.ndarray = getattr(self, f"top{top}_R")[:t, :t]
+        return (r[-1, :] - r.diagonal()).mean()
 
-    def ACC(self):
-        pass
+    def mACC(self, top: int = 1):
+        t = len(self.overall_task)
+        r: np.ndarray = getattr(self, f"top{top}_R")[:t, :t]
+        return r[-1, :].mean()
 
-    def FWT(self):
-        pass
+    def FWT(self, top: int = 1):
+        raise NotImplementedError
 
-    def Ft(self):
-        pass
+    def Ft(self, top: int = 1):
+        raise NotImplementedError
 
 
 def visualize(image: Union[torch.Tensor, np.ndarray],
@@ -272,12 +341,13 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
     num = 1 if image.ndim == 3 else image.shape[0]
     cls = np.array([""] * num) if cls is None else cls
     cls = np.array([cls]) if isinstance(cls, (int, str)) else cls
-    cls = cls.numpy() if isinstance(cls, torch.Tensor) else cls
+    cls: np.ndarray = cls.detach().numpy() if isinstance(cls, torch.Tensor) else cls
+    cls = cls[:, 0] if cls.ndim == 2 and cls.shape[1] >= 2 else cls
     try:
         assert num == len(cls), f"{num} images with {len(cls)} labels"
     except TypeError:
         cls = np.array([cls.item()])
-    image: torch.Tensor = image if isinstance(image, torch.Tensor) else torch.from_numpy(image)
+    image: torch.Tensor = image.detach() if isinstance(image, torch.Tensor) else torch.from_numpy(image)
 
     if image.ndim == 3:
         image = image.unsqueeze(0)
