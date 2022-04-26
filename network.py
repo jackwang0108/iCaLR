@@ -11,7 +11,7 @@ from colorama import Fore, init
 init(autoreset=True)
 
 # My Library
-from datasets import ExamplarSet
+from dataset import ExamplarSet
 
 
 # Since the original iCaLR is implemented using lasagne and Theano, I really cannot read the original codes
