@@ -1,23 +1,23 @@
-# torch library
+# Torch Library
 import torch
 import torch.nn as nn
 
-# standard library
+# Standard Library
 from typing import *
 
-# third-party libraries
+# Third-party Libraries
 from colorama import Fore, init
 
-# my library
-from dataset import ExamplarSets
-
 init(autoreset=True)
+
+# My Library
+from datasets import ExamplarSet
 
 
 # Since the original iCaLR is implemented using lasagne and Theano, I really cannot read the original codes
 # the architecture of the ResNet used in my pytorch re-implementation is ResNet original paper 
 
-class BasicResidualBlock(nn.Module):
+class _BasicResidualBlock(nn.Module):
     __name__ = "ResidualBlock"
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1,
@@ -33,7 +33,7 @@ class BasicResidualBlock(nn.Module):
             with_projection (Union[bool, None]): if use project in the shortcut connection, set to None will let the
                 model decide.
         """
-        super(BasicResidualBlock, self).__init__()
+        super(_BasicResidualBlock, self).__init__()
         # Residual path, bias is omitted (as said in original paper)
         self.residual_path = nn.Sequential(
             nn.Conv2d(
@@ -90,7 +90,7 @@ class BasicResidualBlock(nn.Module):
         return self.output_relu(hx)
 
 
-class BottleneckResidualBlock(nn.Module):
+class _BottleneckResidualBlock(nn.Module):
     __name__ = "ResidualBlock"
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1,
@@ -106,7 +106,7 @@ class BottleneckResidualBlock(nn.Module):
             with_projection (Union[bool, None]): if use project in the shortcut connection, set to None will let the
                 model decide.
         """
-        super(BottleneckResidualBlock, self).__init__()
+        super(_BottleneckResidualBlock, self).__init__()
         # Residual path, bias is omitted (as said in original paper)
         # using 2D convolution of 1*1 kernel to reduce parameters when process large input, ImageNet for example.
         self.residual_path = nn.Sequential(
@@ -204,7 +204,7 @@ class _ResNetBase(nn.Module):
             )
 
         # decide block type
-        block_type = BasicResidualBlock if target_dataset in self.cifar_like_dataset else BottleneckResidualBlock
+        block_type = _BasicResidualBlock if target_dataset in self.cifar_like_dataset else _BottleneckResidualBlock
 
         self.stage1 = self._make_stage(
             block_type=block_type,
@@ -247,7 +247,7 @@ class _ResNetBase(nn.Module):
         x2 = self.stage2(x1)
         x3 = self.stage3(x2)
         x4 = self.stage4(x3)
-        pooled = self.average_pool(x4)
+        pooled: torch.Tensor = self.average_pool(x4)
 
 
         feature_map = pooled.view(pooled.shape[0], -1)
@@ -256,7 +256,7 @@ class _ResNetBase(nn.Module):
             return self.fc(feature_map)
         return feature_map
 
-    def _make_stage(self, block_type: Union[BasicResidualBlock, BottleneckResidualBlock],
+    def _make_stage(self, block_type: Union[_BasicResidualBlock, _BottleneckResidualBlock],
                     in_channels: int, out_channels: int, num_blocks: int, first_stride: int) -> nn.Sequential:
         """
         _make_stage will make a stage. A stage means several basic/bottleneck residual blocks, in original paper, there
@@ -274,7 +274,7 @@ class _ResNetBase(nn.Module):
         blocks = []
         for block_idx, stride in enumerate(block_strides):
             blocks.append(
-                BasicResidualBlock(in_channels=in_channels, out_channels=out_channels, stride=stride)
+                _BasicResidualBlock(in_channels=in_channels, out_channels=out_channels, stride=stride)
             )
             if block_idx == 0:
                 # only the first block will do downsample and expand channels
@@ -282,12 +282,12 @@ class _ResNetBase(nn.Module):
         return nn.Sequential(*blocks)
 
 
-class ResNet34(_ResNetBase):
+class _ResNet34(_ResNetBase):
     __name__ = "ResNet34"
 
     def __init__(self, num_class: int, target_dataset: str):
         assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
-        super(ResNet34, self).__init__(
+        super(_ResNet34, self).__init__(
             num_class=num_class,
             target_dataset=target_dataset,
             num_blocks=[3, 4, 6, 3],
@@ -300,51 +300,120 @@ class ResNet34(_ResNetBase):
         return result
 
 
+class DistillationLoss(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        nn.BCELoss()
+        self._bce_loss = nn.BCEWithLogitsLoss()
+    
+    def forward(self, y_pred: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        # y_pred: [batch_size, len(seen_class)]
+        # y: [batch_size, seen_class]
+        q = y
+        g = y_pred
+        return self._bce_loss(y_pred, y)
+        # return (q * torch.log(g) + (1 - q) * torch.log(1 - g)).sum()
+
+
+
+
 class iCaLRNet(nn.Module):
     __name__ = "iCaLRNet"
 
-    def __init__(self, target_dataset: str) -> None:
+    def __init__(self, num_class: int, target_dataset: str, examplar_set: ExamplarSet) -> None:
+        """
+        __init__ iCaLRNet implementation
+
+        Args:
+            num_class (int): all class
+            target_dataset (str): target dataset
+        
+        Notes:
+            In iCaLR paper, the network make prediction via Nearest-Mean-of-Exemplars.
+            But to train the network, the paper uses weight vectors.
+            In detail, phi(x) denote feature extractor in the paper. And in the code, phi is a ResNet without prediction layer (last linear layer).
+            The output shape of phi(x) is [batch_size, 512]. Let x denote the input, phi(x) := [d_1, d_2, ..., d_512].
+            Let w^y denote weight vector, so w = [w_1, w_2, ..., w_512]^y.
+            So, a_y(x) = w^y @ phi(x), and g_y(x) = 1 / (1 + exp(-a_y(x))).
+            For all y in {0, 1, ..., t}
+            vector a
+            For a batch of 9 examples, the output is 
+                x_1:    [d_1, d_2, ..., d_512]^1
+                x_2:    [d_1, d_2, ..., d_512]^2
+                ...     [..., ..., ..., ...  ]
+                x_9:    [d_1, d_2, ..., d_512]^9
+            
+        """
         super().__init__()
 
+        self.num_class = num_class
+        self.target_dataset = target_dataset
         self.feature_extractor = _ResNetBase(target_dataset=target_dataset, num_blocks=[3, 4, 6, 3], num_class=None)
-        self.weights = nn.ModuleList()
+        self.weights = nn.Linear(in_features=512,out_features=num_class, bias=False)
+        self.examplar_set = examplar_set
 
-    def forward(self):
-        pass
+        self.seen_classes: List[str] = []
+        self._sigmoid = nn.Sigmoid()
+
+        self._cross_entropy_loss = nn.CrossEntropyLoss()
+        self._distillation_loss = DistillationLoss()
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feature_vectores = self.feature_extractor(x)
+        if self.training:
+            train_only = self.weights(feature_vectores)
+            # g = 1 / (1 + torch.exp(-train_only[:, :len(self.seen_classes)]))
+            g = self._sigmoid(train_only[:, :len(self.seen_classes)])
+            return g
+        else:
+            return feature_vectores
+    
+    def set_task(self, task: Union[str, List[str]]):
+        self.current_task = task
+        if isinstance(task, str):
+            self.seen_classes.append(task)
+        elif isinstance(task, (list, tuple)):
+            self.seen_classes.extend(task)
+        else:
+            assert False, f"{Fore.RED}Invalid type, {type(task)}"
+        return self
+    
+    def loss_func(self, y_pred: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        assert y.size(1) >= 2 , f"Ground truth should be [batch_size, 2+num_class], but the groud truth you give is {y.shape}"
+        # get new example idx
+        new_idx = torch.where(y[:, 1] == -1)[0]
+        # assert not (len(new_idx) == 0), f"No new examples, are you sure?"
+        # get old example idx
+        old_idx = torch.where(y[:, 1] != -1)[0]
+
+        new_ce_loss = self._cross_entropy_loss(y_pred[new_idx], y[new_idx, 0].long())
+        if len(old_idx) > 0:
+            old_num = len(self.seen_classes) - len(self.current_task)
+            old_distill_loss = self._distillation_loss(y_pred[old_idx, :old_num], y[old_idx, 2:2+old_num])
+            return new_ce_loss, old_distill_loss
+        return new_ce_loss
+
 
     @torch.no_grad()
-    def inference(self, examplar_set: ExamplarSets):
-        pass
+    def inference(self, x: torch.Tensor, temp_examplar_set: Dict[str, Dict[str, torch.Tensor]] = None) -> torch.Tensor:
+        mu_all = []
+        if temp_examplar_set is None:
+            examplar_set = self.examplar_set.examplar_set
+        else:
+            examplar_set = temp_examplar_set
 
+        for class_name in examplar_set.keys():
+            x_examplar = examplar_set[class_name]["x"]
+            x_examplar = x_examplar if isinstance(x_examplar, torch.Tensor) else torch.from_numpy(x_examplar)
+            if x.device == torch.device("cuda:0"):
+                x_examplar = x_examplar.cuda()
+            mu_y = self.feature_extractor(x_examplar).mean(dim=0)
+            mu_all.append(mu_y)
+        mu_all: torch.Tensor = torch.vstack(mu_all)
 
-
-
-if __name__ == "__main__":
-    # [batch_size, channel, height, width]
-    images = torch.randn(16, 3, 32, 32)
-
-    # test blocks
-    # # test normal
-    # brb_keep = BasicResidualBlock(in_channels=3, out_channels=3, stride=1)
-    # print(brb_keep(images).shape)
-    # # test match channel and downsample
-    # brb_down = BasicResidualBlock(in_channels=3, out_channels=6, stride=2)
-    # print(brb_down(images).shape)
-    #
-    # # test normal
-    # brb_keep = BottleneckResidualBlock(in_channels=3, out_channels=3, stride=1)
-    # print(brb_keep(images).shape)
-    #
-    # # test match channel and downsample
-    # brb_down = BottleneckResidualBlock(in_channels=3, out_channels=6, stride=2)
-    # print(brb_down(images).shape)
-
-    # test network
-    resnet34 = ResNet34(num_class=100, target_dataset="Cifar100")
-    # should be [16, 100]
-    print(resnet34(images).shape)
-    print(resnet34.inference(images))
-
-    icalenet = iCaLRNet(target_dataset="Cifar100")
-    # should be [16, 512]
-    print(icalenet.feature_extractor(images).shape)
+        result = []
+        for xx in self.feature_extractor(x):
+            distance = torch.sqrt(((xx - mu_all)**2).sum(dim=1))
+            result.append(torch.argsort(distance))
+        return torch.vstack(result)
