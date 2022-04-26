@@ -31,7 +31,7 @@ init(autoreset=True)
 from network import iCaLRNet
 from dataset import Cifar100, ExamplarSet
 from helper import ProjectPath, legal_converter, cifar100_labels, system
-from helper import ClassificationEvaluator, ContinualLearningEvaluator
+from helper import ClassificationEvaluator
 
 
 class CLTrainer:
@@ -42,17 +42,18 @@ class CLTrainer:
 
     default_dtype: torch.dtype = torch.float32
 
-    def __init__(self, network: iCaLRNet, dry_run: bool=True, log: bool = False) -> None:
+    def __init__(self, network: iCaLRNet, task_list: List[Tuple[str]], dry_run: bool=True, log: bool = False) -> None:
+        self.train_list = task_list
+        self.net = network.to(device=self.available_device, non_blocking=True)
+        self.log = log
         self.dry_run: bool = dry_run
 
-
-        self.net = network.to(device=self.available_device, non_blocking=True)
         self.optim = optim.Adam(self.net.parameters())
 
         # summary writer
-        suffix = self.net.__class__.__name__
+        suffix = self.net.__class__.__name__ + f"/num_task_{len(self.train_list[0])}"
         if not self.dry_run:
-            writer_path: Path = legal_converter(ProjectPath.runs / suffix / self.start_time)
+            writer_path: Path = legal_converter(ProjectPath.runs / suffix /self.start_time)
             self.writer = SummaryWriter(log_dir=writer_path)
         
         # datasets
@@ -76,7 +77,6 @@ class CLTrainer:
         terminal.setFormatter(fmt=fmt)
         self.logger.addHandler(terminal)
 
-        self.log = log
         if log:
             self.log_path = legal_converter(ProjectPath.logs / suffix / self.start_time / "trian.log")
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +91,13 @@ class CLTrainer:
         if getattr(self, "writer", None) is not None:
             self.writer.close()
         
+        self.logger.info(f"Shutdown at {datetime.datetime.now()}, waiting...")
+        # shutdown logging and flush buffer
+        import time
+        # wait for write to file
+        time.sleep(3)
+        logging.shutdown()
+        
         # clean logs
         import re
         with self.log_path.open(mode="r+") as f:
@@ -100,27 +107,44 @@ class CLTrainer:
             f.seek(0)
             f.write("".join(lines[:-1]))
 
-    def train(self, task_list: List[Tuple[str]], n_epcoh: int = 70, early_stop: int = 20):
+    def train(self, n_epcoh: int = 70, early_stop: int = 20, bsize: int = 128):
+        task_list = self.train_list
+
         self.logger.info(f"n_epoch: {n_epcoh}")
         self.logger.info(f"early_stop: {early_stop}")
         self.logger.info(f"task_list: {task_list}")
 
-        # loaders
-        train_loader = data.DataLoader(
-            self.train_set, batch_size=128, shuffle=True, num_workers=self.num_worker, pin_memory=True
-        )
-        val_loader = data.DataLoader(
-            self.val_set, batch_size=128, shuffle=False, num_workers=self.num_worker, pin_memory=True
-        )
+        # writer setup
+        loss_step: int = 0
+        if not self.dry_run:
+            # save optim, feature_extractor
+            self.writer.add_text(tag="Train Setup", global_step=0,
+                text_string=f"Optim: {self.optim.__class__.__name__}, " + f"Feature Extractor: {self.net.__fe__}"
+            )
+            # save hparam
+            self.writer.add_text(tag= "Train Hparam", global_step=0,
+                text_string= f"lr: {self.optim.param_groups[0]['lr']}, " + f"bsize: {bsize}, " + f"epoch: {n_epcoh}, " + f"early_stop: {early_stop}"
+            )
+            # save task list
+            for task_seq, task in enumerate(task_list):
+                self.writer.add_text(tag="Task List", text_string=f"Task {task_seq}: " + ", ".join(task), global_step=task_seq)
 
-        last_best: Union[iCaLRNet, None] = None
 
         e_digit = len(str(n_epcoh))
         ee_digit = len(str(early_stop))
         t_digit = len(str(len(task_list)))
         torch.autograd.set_detect_anomaly(True)
 
-        # == Pytorch Code Implementation of "Algorithm 2: iCaRL INCREMENTALTRAIN"
+        last_best: Union[iCaLRNet, None] = None
+        # loaders
+        train_loader = data.DataLoader(
+            self.train_set, batch_size=bsize, shuffle=True, num_workers=self.num_worker, pin_memory=True
+        )
+        val_loader = data.DataLoader(
+            self.val_set, batch_size=bsize, shuffle=False, num_workers=self.num_worker, pin_memory=True
+        )
+
+        # Attention: Pytorch Code Implementation of Algorithm 2: iCaRL INCREMENTALTRAIN
         for task_idx, task in enumerate(task_list):
             x: torch.Tensor
             y: torch.Tensor
@@ -133,7 +157,7 @@ class CLTrainer:
 
             classification_evaluator = ClassificationEvaluator(num_class=len(task))
 
-            # == Algorithm 3 iCaRL UPDATEREPRESENTATION
+            # Attention: Algorithm 3: iCaRL UPDATEREPRESENTATION
             # set q
             if task_idx >= 1:
                 with torch.no_grad():
@@ -162,8 +186,15 @@ class CLTrainer:
                     if isinstance(loss, tuple):
                         loss[0].backward(retain_graph=True)
                         loss[1].backward()
+                        if not self.dry_run:
+                            self.writer.add_scalar(tag="Loss/CrossEntropy", global_step=loss_step, scalar_value=loss[0].cpu().item())
+                            self.writer.add_scalar(tag="Loss/Distillation", global_step=loss_step, scalar_value=loss[1].cpu().item())
+                            loss_step += 1
                     else:
                         loss.backward()
+                        if not self.dry_run:
+                            self.writer.add_scalar(tag="Loss/CrossEntropy", global_step=loss_step, scalar_value=loss.cpu().item())
+                            loss_step += 1
 
                     self.optim.step()
                     # record example in the first epoch
@@ -180,7 +211,8 @@ class CLTrainer:
                     for idx, x, y in val_loader:
                         x = x.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
                         y = y.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
-                        # ! 有问题, Examplar set 一开始取得不准
+
+                        # Warning 有问题, Examplar set 一开始取得不准
                         temp_examplar_set = net.examplar_set.construct_examplar_set(phi = self.net, temp=True)
                         y_classify = self.net.inference(x=x, temp_examplar_set=temp_examplar_set)
 
@@ -197,10 +229,20 @@ class CLTrainer:
                     self.logger.info(f"{Fore.GREEN}Task: [{task_idx:>{t_digit}}|{task}], Epoch: [{epoch:>{e_digit}}/{n_epcoh}], new top1 Acc: {top1_current_acc:>.5f}")
                     if not self.dry_run:
                         torch.save(self.net, (f:=self.checkpoint_path / f"task_{task_idx}-best.pt"))
-                        self.logger.info("Save checkpoint!")
                 else:
                     early_stop_cnt += 1
                     self.logger.info(f"{Fore.GREEN}Task: [{task_idx:>{t_digit}}|{task}], Epoch: [{epoch:>{e_digit}}/{n_epcoh}], Acc: [{top1_current_acc:>.5f}|{max_top1_acc:>.5f}], Early Stop: [{early_stop_cnt:>{ee_digit}}|{early_stop}]")
+                
+                # writer log task acc
+                if not self.dry_run:
+                    self.writer.add_scalars(
+                        main_tag=f"Task_{task_idx}-Acc",
+                        tag_scalar_dict={
+                            "mAcc-top1": top1_current_acc,
+                            "mAcc-max-top1": max_top1_acc
+                        },
+                        global_step=epoch
+                    )
 
                 if early_stop_cnt >= early_stop:
                     break
@@ -209,10 +251,10 @@ class CLTrainer:
             self.net.load_state_dict(last_best)
             self.logger.info(f"{Fore.GREEN}Task: [{task_idx:>{t_digit}}|{task}], end at Epoch: [{epoch:>{e_digit}}/{n_epcoh}], switch to best model, best Acc: [{max_top1_acc:>.5f}]")
 
-            # == construct examplar set, Algorithm 4 iCaRL CONSTRUCTEXEMPLARSET
+            # Attention: construct examplar set, Algorithm 4: iCaRL CONSTRUCTEXEMPLARSET
             self.train_set.examplar_set.construct_examplar_set(phi=self.net)
 
-            # == reduce examplar set, Algorithm 5 iCaRL REDUCEEXEMPLARSET
+            # Attention: reduce examplar set, Algorithm 5: iCaRL REDUCEEXEMPLARSET
             self.train_set.examplar_set.reduce_examplar_set()
             
 
@@ -231,32 +273,44 @@ class CLTrainer:
                         # log
                         p_all_num += len(y)
                         p_acc_num += sum(y[:, 0] == y_classify[:, 0])
-                task_acc.append(p_acc_num / p_acc_num)
+                task_acc.append(p_acc_num / p_all_num)
                 self.logger.info(f"{Fore.YELLOW}Past Task: [{past_task_idx:>{task_idx}}|{past_task}], Acc: {task_acc[-1]:>.5f}")
             acc = sum(task_acc) / len(task_acc)
             self.logger.info(f"{Fore.MAGENTA}After Task: [{task_idx:>{t_digit}}|{task}], CL_Acc: {acc:>.5f}")
+
+            if not self.dry_run:
+                scalar_dict: Dict[str, float] = {
+                    f"Per-Task mAcc/Task_{past_task_idx}":past_task_acc for past_task_idx, past_task_acc in enumerate(task_acc)
+                }
+                self.writer.add_scalars(main_tag=f"CL Evaluation", tag_scalar_dict=scalar_dict, global_step=task_idx)
+                self.writer.add_scalar(tag=f"CL Evaluation/Mean Task Acc", scalar_value=acc, global_step=task_idx)
 
         return self.net
 
 
 
 if __name__ == "__main__":
-    import pprint
-
+    # Notes: Parameters
     if_shuffle = True
-    num_task = 2
-
+    num_class_per_task = 2
+    
+    # Bug: 在训练到后面的任务的时候, cl的平均acc就成0了
 
     task_list = []
     if if_shuffle:
         cifar100_labels.shuffle()
 
-    for i in range(0, len(cifar100_labels.cifar100_labels), num_task):
-        task_list.append(tuple(cifar100_labels.cifar100_labels[i: i+num_task]))
+    for i in range(0, len(cifar100_labels.cifar100_labels), num_class_per_task):
+        task_list.append(tuple(cifar100_labels.cifar100_labels[i: i+num_class_per_task]))
 
     e = ExamplarSet()
     net = iCaLRNet(num_class=100, target_dataset="Cifar100", examplar_set=e)
-    net = CLTrainer(network=net, dry_run=True, log=True).train(task_list=task_list, n_epcoh=70, early_stop=5)
+    net.__fe__ += "32"
+    trainer = CLTrainer(network=net, task_list=task_list, dry_run=False, log=True)
+    try:
+        net = trainer.train(n_epcoh=70, early_stop=5)
+    except KeyboardInterrupt:
+        del trainer, net
 
     # debug, record the GPU memory use
     # from pytorch_memlab import LineProfiler
