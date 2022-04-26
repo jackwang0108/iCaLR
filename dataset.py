@@ -357,14 +357,14 @@ class Cifar100(data.Dataset):
             class2idx: Dict[int, np.ndarray] = {i: np.where(
                 label == i)[0] for i in cifar100_labels.cifar100_num2label.keys()}
 
-        import warnings
-        warnings.warn(
-            message=f"{Fore.RED}To implement Distillation loss, y is set to [N, 2+num_class], "
-                    f"{Fore.RED}2 for y_label, examplar_flag, q."
-                    f"{Fore.RED}So, default y is float, you need to change y[0] to long before calculate CEloss, "
-                    f"{Fore.RED}You can delete this warining after debug",
-            category=UserWarning
-        )
+        # import warnings
+        # warnings.warn(
+        #     message=f"{Fore.RED}To implement Distillation loss, y is set to [N, 2+num_class], "
+        #             f"{Fore.RED}2 for y_label, examplar_flag, q."
+        #             f"{Fore.RED}So, default y is float, you need to change y[0] to long before calculate CEloss, "
+        #             f"{Fore.RED}You can delete this warining after debug",
+        #     category=UserWarning
+        # )
         ones = np.ones(shape=(label.shape[0], 1))
         q = np.zeros(shape=(ones.shape[0], 100))
         label = np.hstack((label[:, np.newaxis], ones * -1, q)).astype(float)
