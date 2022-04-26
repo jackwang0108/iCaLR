@@ -294,7 +294,7 @@ if __name__ == "__main__":
     if_shuffle = True
     num_class_per_task = 2
     
-    # Bug: 在训练到后面的任务的时候, cl的平均acc就成0了
+    # Bug?: 在训练到后面的任务的时候, cl的平均acc就成0了
 
     task_list = []
     if if_shuffle:
