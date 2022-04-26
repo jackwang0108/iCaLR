@@ -312,7 +312,6 @@ class DistillationLoss(nn.Module):
         q = y
         g = y_pred
         return self._bce_loss(y_pred, y)
-        # return (q * torch.log(g) + (1 - q) * torch.log(1 - g)).sum()
 
 
 
@@ -363,7 +362,6 @@ class iCaLRNet(nn.Module):
         feature_vectores = self.feature_extractor(x)
         if self.training:
             train_only = self.weights(feature_vectores)
-            # g = 1 / (1 + torch.exp(-train_only[:, :len(self.seen_classes)]))
             g = self._sigmoid(train_only[:, :len(self.seen_classes)])
             return g
         else:
@@ -383,7 +381,6 @@ class iCaLRNet(nn.Module):
         assert y.size(1) >= 2 , f"Ground truth should be [batch_size, 2+num_class], but the groud truth you give is {y.shape}"
         # get new example idx
         new_idx = torch.where(y[:, 1] == -1)[0]
-        # assert not (len(new_idx) == 0), f"No new examples, are you sure?"
         # get old example idx
         old_idx = torch.where(y[:, 1] != -1)[0]
 

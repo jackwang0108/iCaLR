@@ -1,7 +1,6 @@
 # Standard Library
 import pickle
 from typing import *
-from numbers import Number
 
 # Third Party Library
 import numpy as np
@@ -14,7 +13,7 @@ import torch
 import torch.utils.data as data
 
 # My Library
-from helper import ProjectPath, DatasetPath, visualize, cifar100_labels
+from helper import ProjectPath, DatasetPath, cifar100_labels
 
 
 class ExamplarSet(data.Dataset):

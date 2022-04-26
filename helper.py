@@ -25,13 +25,13 @@ system: str = platform.uname().system
 
 
 # Decide Path
-# Path: Union[PosixPath, WindowsPath]
-# if system == "Windows":
-#     Path = WindowsPath
-# elif system == "Linux":
-#     Path = PosixPath
-# else:
-#     raise NotImplementedError
+Path: Union[PosixPath, WindowsPath]
+if system == "Windows":
+    Path = WindowsPath
+elif system == "Linux":
+    Path = PosixPath
+else:
+    raise NotImplementedError
 
 
 class ProjectPath:
