@@ -394,7 +394,7 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
     return np.frombuffer(canvas.tostring_rgb(), dtype='uint8').reshape(fig.canvas.get_width_height()[::-1] + (3,))
 
 
-def legal_converter(path: Path):
+def legal_converter(path: Path) -> Path:
     global system
     if system == "Windows":
         illegal_char = ["<", ">", ":", "\"", "'", "/", "\\", "|", "?", "*"]
