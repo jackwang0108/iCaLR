@@ -8,29 +8,26 @@ Notes:
 
 # Torch Library
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 from torch.utils.tensorboard import SummaryWriter
 
 # Standard Library
-import time
+import copy
 import datetime
 from typing import *
 from pathlib import Path
 
 
 # Third-party Library
-import numpy as np
 from colorama import Fore, init
-# from pytorch_memlab import LineProfiler
 
 init(autoreset=True)
 
 # My Library
 from network import iCaLRNet
 from dataset import Cifar100, ExamplarSet
-from helper import ProjectPath, DatasetPath, visualize, legal_converter, cifar100_labels, system
+from helper import ProjectPath, legal_converter, cifar100_labels, system
 from helper import ClassificationEvaluator, ContinualLearningEvaluator
 
 
@@ -84,9 +81,12 @@ class CLTrainer:
         # evaluator
         cl_evaluator = ContinualLearningEvaluator(num_task=len(task_list))
 
+        last_best: Union[iCaLRNet, None] = None
 
-        ndigit = len(str(n_epcoh))
 
+        e_digit = len(str(n_epcoh))
+        ee_digit = len(str(early_stop))
+        t_digit = len(len(task_list))
         torch.autograd.set_detect_anomaly(True)
 
         # == Pytorch Code Implementation of "Algorithm 2: iCaRL INCREMENTALTRAIN"
@@ -96,7 +96,6 @@ class CLTrainer:
             loss: torch.Tensor
 
             print(f"{Fore.BLUE}New Task: {task}")
-            # time.sleep(3)
             
             self.net.set_task(task=task)
             self.train_set.set_task(task=task)
@@ -104,7 +103,6 @@ class CLTrainer:
             classification_evaluator = ClassificationEvaluator(num_class=len(task))
 
             # == Algorithm 3 iCaRL UPDATEREPRESENTATION
-
             # set q
             if task_idx >= 1:
                 with torch.no_grad():
@@ -137,8 +135,7 @@ class CLTrainer:
                         loss.backward()
 
                     self.optim.step()
-                    # print(loss)
-                    # load example in the first epoch
+                    # record example in the first epoch
                     if epoch == 0:
                         self.train_set.examplar_set.add_batch(x=x, y=y)
                 
@@ -159,50 +156,40 @@ class CLTrainer:
                         # classification evaluates
                         all_num += len(y)
                         acc_num += sum(y[:, 0] == y_classify[:, 0])
-                #         seen_class = sum([0] + [len(i) for i in task_list[:task_idx]])
-                #         # log top 1
-                #         classification_evaluator.add_batch_top1(y_pred=y_classify[:, 0], y=y[:, 0], seen_class=seen_class)
-                #         # log top 5
-                #         if len(task) >= 5:
-                #             classification_evaluator.add_batch_top5(y_pred=y_pred[:, 5], y=y[:, 0], seen_class=seen_class)
-                #
-                # top1_current_acc = classification_evaluator.accuracy(top=1)
+
                 top1_current_acc = acc_num / all_num
                 # save checkpoint
                 if top1_current_acc > max_top1_acc:
                     max_top1_acc = top1_current_acc
                     early_stop_cnt = 0
-                    print(f"{Fore.GREEN}Task: [{task_idx}|{task}], Epoch: [{epoch}/{n_epcoh}], Max Top1 Acc = {top1_current_acc:>.4f}")
-                    time.sleep(1)
+                    last_best = copy.deepcopy(self.net)
+                    print(f"{Fore.GREEN}Task: [{task_idx:>t_digit}|{task}], Epoch: [{epoch:>e_digit}/{n_epcoh}], new top1 Acc: {top1_current_acc:>.5f}")
                     if not self.dry_run:
                         torch.save(self.net, (f:=self.checkpoint_path / f"task_{task_idx}-best.pt"))
                         print("Save checkpoint!")
                 else:
                     early_stop_cnt += 1
-                    print(f"{Fore.GREEN}Task: [{task_idx}|{task}], Epoch: [{epoch}/{n_epcoh}], Acc = [{top1_current_acc:>.4f}|{max_top1_acc:>.4f}], Early Stop: [{early_stop_cnt}|{early_stop}]")
+                    print(f"{Fore.GREEN}Task: [{task_idx:t_digit}|{task}], Epoch: [{epoch:>e_digit}/{n_epcoh}], Acc: [{top1_current_acc:>.5f}|{max_top1_acc:>.5f}], Early Stop: [{early_stop_cnt:>ee_digit}|{early_stop}]")
 
                 if early_stop_cnt >= early_stop:
                     break
 
-                #== debug only
-                # if epoch == 6:
-                #     break
             # load best
-            if not self.dry_run:
-                self.net.load_state_dict(torch.load(f, map_location=self.available_device))
+            self.net = last_best
 
             # == construct examplar set, Algorithm 4 iCaRL CONSTRUCTEXEMPLARSET
             self.train_set.examplar_set.construct_examplar_set(phi=self.net)
+
             # == reduce examplar set, Algorithm 5 iCaRL REDUCEEXEMPLARSET
             self.train_set.examplar_set.reduce_examplar_set()
             
-            # cl evaluates
-            # cl_evaluator.after_new_task(task=task)
+
+            # test cl performance
             all_num = 0
             acc_num = 0
             for past_task_idx, past_task in enumerate(task_list[:task_idx+1]):
-                # cl_evaluator.start_test_task(task=past_task, test_task_idx=past_task_idx)
-
+                p_all_num = 0
+                p_acc_num = 0
                 with torch.no_grad():
                     self.val_set.set_task(task=past_task)
                     for idx, x, y in val_loader:
@@ -210,15 +197,15 @@ class CLTrainer:
                         y = y.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
                         y_classify = self.net.inference(x=x)
 
-
-
-                        all_num += len(y)
-                        acc_num += sum(y[:, 0] == y_classify[:, 0])
-            print(f"{Fore.GREEN}Task: [{task_idx}|{task}], CL_Acc = {acc_num / all_num:>.4f}")
                         # log
-            #             cl_evaluator.add_batch(y_pred=y_classify[:, :5], y=y[:, 0])
-            #     cl_evaluator.end_test_task()
-            # print(f"{Fore.GREEN}Task: [{task_idx}|{task}], mAcc = {cl_evaluator.mACC():>.4f}, BWT = {cl_evaluator.BWT():>.4f}")
+                        p_all_num += len(y)
+                        p_acc_num += sum(y[:, 0] == y_classify[:, 0])
+                print(f"{Fore.BLUE}Past Task: [{past_task_idx:>task_idx}|{task}], Acc: {p_acc_num / p_all_num:>.5f}")
+
+                all_num += p_all_num
+                acc_num += p_acc_num
+            top1_acc_task = acc_num / all_num
+            print(f"{Fore.CYAN}After Task: [{task_idx:>t_digit}|{task}], CL_Acc: {top1_acc_task:>.5f}")
 
         return self.net
 
@@ -243,8 +230,10 @@ if __name__ == "__main__":
     e = ExamplarSet()
     net = iCaLRNet(num_class=100, target_dataset="Cifar100", examplar_set=e)
     net = CLTrainer(network=net, dry_run=True).train(task_list=task_list, n_epcoh=70, early_stop=35)
-    # trainer = CLTrainer(network=net, dry_run=True)
 
+    # debug, record the GPU memory use
+    # from pytorch_memlab import LineProfiler
+    # trainer = CLTrainer(network=net, dry_run=True)
     # try:
     #     with LineProfiler(trainer.train) as prof:
     #         trainer.train(task_list=task_list, n_epcoh=6)
