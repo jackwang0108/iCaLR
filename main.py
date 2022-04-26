@@ -29,8 +29,8 @@ init(autoreset=True)
 
 # My Library
 from network import iCaLRNet
-from datasets import Cifar100, ExamplarSet
-from helper import ProjectPath, DatasetPath, visualize, legal_converter, shuffle, cifar100_labels, system
+from dataset import Cifar100, ExamplarSet
+from helper import ProjectPath, DatasetPath, visualize, legal_converter, cifar100_labels, system
 from helper import ClassificationEvaluator, ContinualLearningEvaluator
 
 
@@ -228,16 +228,16 @@ if __name__ == "__main__":
     import pprint
 
     # Fixme: if_shuffle 设为True则会由于其他脚本已经有了cifar100_label, cifar100_label2num, cifar100_num2label而导致出错
-    if_shuffle = False
+    if_shuffle = True
     num_task = 2
 
 
     task_list = []
     if if_shuffle:
-        shuffle()
+        cifar100_labels.shuffle()
 
-    for i in range(0, len(cifar100_labels), num_task):
-        task_list.append(tuple(cifar100_labels[i: i+num_task]))
+    for i in range(0, len(cifar100_labels.cifar100_labels), num_task):
+        task_list.append(tuple(cifar100_labels.cifar100_labels[i: i+num_task]))
     pprint.pprint(task_list)
 
     e = ExamplarSet()

@@ -14,7 +14,7 @@ import torch
 import torch.utils.data as data
 
 # My Library
-from helper import ProjectPath, DatasetPath, visualize, cifar100_labels, cifar100_num2label, cifar100_label2num
+from helper import ProjectPath, DatasetPath, visualize, cifar100_labels
 
 
 class ExamplarSet(data.Dataset):
@@ -62,7 +62,7 @@ class ExamplarSet(data.Dataset):
             # idx = torch.where(y[:, 0] == sub_label)[0].tolist()
             idx = np.where(y[:, 0] == sub_label)[0].tolist()
             # if self._temp_data.get(s := cifar100_num2label[sub_label.item()], None) is not None:
-            if (s := cifar100_num2label[sub_label.item()]) in self._temp_data.keys():
+            if (s := cifar100_labels.cifar100_num2label[sub_label.item()]) in self._temp_data.keys():
                 self._temp_data[s]["x"] = np.concatenate(
                     [self._temp_data[s]["x"], x[idx]], axis=0
                 )
@@ -118,13 +118,13 @@ class ExamplarSet(data.Dataset):
                 self.examplar_set[sub_label] = {}
                 self.examplar_set[sub_label]["x"] = self._temp_data[sub_label]["x"][save_idx]
                 y = self._temp_data[sub_label]["y"][save_idx]
-                y[:, 1] = cifar100_label2num[sub_label]
+                y[:, 1] = cifar100_labels.cifar100_label2num[sub_label]
                 self.examplar_set[sub_label]["y"] = y
             else:
                 t[sub_label] = {}
                 t[sub_label]["x"] = torch.from_numpy(self._temp_data[sub_label]["x"][save_idx])
                 y = self._temp_data[sub_label]["y"][save_idx]
-                y[:, 1] = cifar100_label2num[sub_label]
+                y[:, 1] = cifar100_labels.cifar100_label2num[sub_label]
                 t[sub_label]["y"] = torch.from_numpy(y)
         if temp:
             return t
@@ -241,8 +241,8 @@ class Cifar100(data.Dataset):
 
     def set_all_task(self):
         global cifar100_labels
-        self._set_visible_class(cifar100_labels)
-        self.current_task = cifar100_labels
+        self._set_visible_class(cifar100_labels.cifar100_labels)
+        self.current_task = cifar100_labels.cifar100_labels
         return self
 
     def new_only(self, flag: bool = True):
@@ -270,7 +270,7 @@ class Cifar100(data.Dataset):
         # get converter
         if s[0] == "str":
             def _converter(cls):
-                return self.class2idx[cifar100_label2num[cls]]
+                return self.class2idx[cifar100_labels.cifar100_label2num[cls]]
         else:
             def _converter(cls):
                 return self.class2idx[cls]
@@ -306,7 +306,7 @@ class Cifar100(data.Dataset):
 
             # get num2idx dict
             class2idx: Dict[int, np.ndarray] = {i: np.where(
-                label == i)[0] for i in cifar100_num2label.keys()}
+                label == i)[0] for i in cifar100_labels.cifar100_num2label.keys()}
         else:
             with DatasetPath.Cifar100.train.open(mode="rb") as f:
                 # Note: {b"filenames": List[bytes],
@@ -325,7 +325,7 @@ class Cifar100(data.Dataset):
 
             # get num2idx dict
             class2idx: Dict[int, np.ndarray] = {i: np.where(
-                label == i)[0] for i in cifar100_num2label.keys()}
+                label == i)[0] for i in cifar100_labels.cifar100_num2label.keys()}
 
             # decide for train and val
             if not (p := ProjectPath.base.joinpath("train_val.npz")).exists() or refresh:
@@ -356,7 +356,7 @@ class Cifar100(data.Dataset):
 
             # update num2idx dict
             class2idx: Dict[int, np.ndarray] = {i: np.where(
-                label == i)[0] for i in cifar100_num2label.keys()}
+                label == i)[0] for i in cifar100_labels.cifar100_num2label.keys()}
 
         import warnings
         warnings.warn(
