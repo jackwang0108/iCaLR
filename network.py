@@ -318,6 +318,7 @@ class DistillationLoss(nn.Module):
 
 class iCaLRNet(nn.Module):
     __name__ = "iCaLRNet"
+    __fe__ = "ResNet"
 
     def __init__(self, num_class: int, target_dataset: str, examplar_set: ExamplarSet) -> None:
         """
