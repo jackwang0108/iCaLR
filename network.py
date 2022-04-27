@@ -357,11 +357,11 @@ class iCaLRNet(nn.Module):
 
         self._cross_entropy_loss = nn.CrossEntropyLoss()
         self._distillation_loss = DistillationLoss()
+    
 
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, feature: bool = True) -> torch.Tensor:
         feature_vectores = self.feature_extractor(x)
-        if self.training:
+        if self.training or not feature:
             train_only = self.weights(feature_vectores)
             g = self._sigmoid(train_only[:, :len(self.seen_classes)])
             return g
