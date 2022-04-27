@@ -24,6 +24,7 @@ from pathlib import Path
 
 
 # Third-party Library
+import PIL.Image as Image
 from colorama import Fore, Style, init
 
 init(autoreset=True)
@@ -31,7 +32,7 @@ init(autoreset=True)
 # My Library
 from network import iCaLRNet
 from dataset import Cifar100, ExamplarSet
-from helper import ProjectPath, legal_converter, cifar_task_setter, system
+from helper import ProjectPath, legal_converter, visualize, cifar_task_setter, system
 from helper import ClassificationEvaluator
 
 
@@ -159,7 +160,7 @@ class CLTrainer:
 
             self.logger.info(f"{Fore.BLUE}New Task: {task}")
             
-            self.net.set_task(task=task)
+            self.net.add_task(task=task)
             self.train_set.set_task(task=task)
 
             # Notes: renew optim and grid
@@ -182,6 +183,9 @@ class CLTrainer:
             # learn new task
             max_top1_acc: float = 0
             early_stop_cnt: float = 0
+
+            # debug code
+            task_class = [cifar_task_setter.get_num(name) for name in task]
             for epoch in range(n_epcoh):
                 # train
                 self.net.train()
@@ -195,8 +199,9 @@ class CLTrainer:
                     self.optim.zero_grad()
 
                     if isinstance(loss, tuple):
-                        loss[0].backward(retain_graph=True)
-                        loss[1].backward()
+                        # loss[0].backward(retain_graph=True)
+                        # loss[1].backward()
+                        (loss[0] + loss[1]).backward()
                         if not self.dry_run:
                             self.writer.add_scalar(tag="Loss/CrossEntropy", global_step=loss_step, scalar_value=loss[0].cpu().item())
                             self.writer.add_scalar(tag="Loss/Distillation", global_step=loss_step, scalar_value=loss[1].cpu().item())
@@ -247,6 +252,7 @@ class CLTrainer:
                 if top1_current_acc > max_top1_acc:
                     max_top1_acc = top1_current_acc
                     early_stop_cnt = 0
+                    del last_best
                     last_best = copy.deepcopy(self.net.state_dict())
                     self.logger.info(f"{Fore.GREEN}Task: [{task_idx:>{t_digit}}|{task}], Epoch: [{epoch:>{e_digit}}/{n_epcoh}], new top1 Acc: {top1_current_acc:>.5f}")
                     if not self.dry_run:
@@ -275,10 +281,11 @@ class CLTrainer:
 
             # Attention: construct examplar set, Algorithm 4: iCaRL CONSTRUCTEXEMPLARSET
             seen_class_num = len(self.net.examplar_set.examplar_set.keys()) + len(task)
+            # Notes: Exmaplar Set, task_idx = 3, 没有can
             self.train_set.examplar_set.construct_examplar_set(phi=self.net, m=2000 // seen_class_num)
 
             # Attention: reduce examplar set, Algorithm 5: iCaRL REDUCEEXEMPLARSET
-            self.train_set.examplar_set.reduce_examplar_set()
+            self.train_set.examplar_set.reduce_examplar_set(m = 2000 // seen_class_num)
             
 
             # test cl performance
@@ -297,7 +304,7 @@ class CLTrainer:
 
                         # log
                         p_all_num += len(y)
-                        p_acc_num += sum(y[:, 0] == y_classify[:, 0])
+                        p_acc_num += sum(y[:, 0] == y_classify[:, 0]).item()
                 task_acc.append(p_acc_num / p_all_num)
                 self.logger.info(f"{Fore.YELLOW}Past Task: [{past_task_idx:>{task_idx}}|{past_task}], Acc: {task_acc[-1]:>.5f}")
             acc = sum(task_acc) / len(task_acc)
@@ -319,7 +326,7 @@ def get_args() -> argparse.Namespace:
     def blue(s): return f"{Fore.BLUE}{Style.BRIGHT}{s}{Style.RESET_ALL}"
 
     parser = argparse.ArgumentParser(description=blue("iCaRL Pytorch Implementation training util by Shihong Wang (Jack3Shihong@gmail.com)"))
-    parser.add_argument("-v", "--version", action="version", version="%(prog)s v1.0")
+    parser.add_argument("-v", "--version", action="version", version="%(prog)s v2.0, fixed training bugs, but there's still GPU memory leak problem")
     parser.add_argument("-s", "--shuffle", dest="shuffle", default=False, action="store_true", help=green("If shuffle the training classes"))
     parser.add_argument("-d", "--dry_run", dest="dry_run", default=False, action="store_true", help=green("If run without saving tensorboard amd network params to runs and checkpoints"))
     parser.add_argument("-l", "--log", dest="log", default=False, action="store_true", help=green("If save terminal output to log"))
@@ -327,6 +334,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=100, help=yellow("Set maximum training epoch of each task"))
     parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=20, help=yellow("Set maximum early stop epoch counts"))
     parser.add_argument("-tm", "--test_method", dest="test_method", type=int, default=1, help=yellow("Set test method, 0 for classify, 1 for argmax"))
+    parser.add_argument("-m", "--message", dest="message", type=str, default=f"", help=yellow("Training digest"))
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -343,14 +351,33 @@ if __name__ == "__main__":
     early_stop = args.early_stop
     test_method = args.test_method
     
-    # Bug?: 在训练到后面的任务的时候, cl的平均acc就成0了
-    # Notes: 
-    #   * 1. 第一个问题是每个task开始的时候需要重新初始化optimizer, 因为里面保存着移动平均值, 否则后续的几个任务就训练不动了 
 
     # generate task list
     if if_shuffle:
         cifar_task_setter.shuffle()
     task_list = cifar_task_setter.gen_task_list()
+
+    # Bug?: 在训练到后面的任务的时候, cl的平均acc就成0了. Fixed
+    # Notes: Bug 发生的原因
+    #   * 1. 第一个问题是每个task开始的时候需要重新初始化optimizer, 因为里面保存着移动平均值, 否则后续的几个任务就训练不动了
+    #   * 2. 第二个问题是dataset的load方法写错了, 本来应该是按照类每个类选取一定样本来作为测试, 结果因为变量的问题导致成所有类随机取样了
+    #   *    从而导致有一些类不在训练集中, 但是在测试集中
+    # task_list = cifar_task_setter.set_task_list(
+    #     [
+    #         ('crab', 'television', 'porcupine', 'leopard', 'poppy', 'pine_tree', 'trout', 'crocodile', 'raccoon', 'lawn_mower'),
+    #         ('tank', 'bottle', 'snake', 'aquarium_fish', 'train', 'dolphin', 'beaver', 'bed', 'whale', 'telephone'),
+    #         ('willow_tree', 'kangaroo', 'wolf', 'pickup_truck', 'sunflower', 'sea', 'apple', 'elephant', 'bear', 'palm_tree'),
+    #         ('dinosaur', 'mountain', 'butterfly', 'can', 'seal', 'pear', 'hamster', 'possum', 'orange', 'turtle'),
+    #         ('camel', 'mouse', 'fox', 'skyscraper', 'lamp', 'house', 'motorcycle', 'cup', 'cockroach', 'streetcar'),
+    #         ('otter', 'tulip', 'rose', 'castle', 'clock', 'lizard', 'forest', 'cattle', 'sweet_pepper', 'bowl'),
+    #         ('ray', 'shrew', 'tractor', 'plate', 'mushroom', 'keyboard', 'table', 'lobster', 'tiger', 'squirrel'),
+    #         ('bridge', 'worm', 'bus', 'maple_tree', 'flatfish', 'orchid', 'rabbit', 'rocket', 'bicycle', 'shark'),
+    #         ('oak_tree', 'road', 'cloud', 'wardrobe', 'skunk', 'woman', 'plain', 'man', 'snail', 'beetle'),
+    #         ('couch', 'lion', 'bee', 'boy', 'girl', 'baby', 'chimpanzee', 'chair', 'spider', 'caterpillar')
+    #     ]
+    # )
+
+    # Bug?: 训练的过程中会缓慢的有GPU缓存泄漏  
 
     e = ExamplarSet()
     net = iCaLRNet(num_class=100, target_dataset="Cifar100", examplar_set=e)
