@@ -80,11 +80,10 @@ class ExamplarSet(data.Dataset):
                 # t_dict["y"] = y[idx].clone().detach()
                 self._temp_data[s] = t_dict
 
-    def reduce_examplar_set(self):
-        self.m = self.k // len(self.examplar_set)
+    def reduce_examplar_set(self, m):
         for class_name in self.examplar_set.keys():
-            self.examplar_set[class_name]["x"] = self.examplar_set[class_name]["x"][:self.m, :]
-            self.examplar_set[class_name]["y"] = self.examplar_set[class_name]["y"][:self.m, :]
+            self.examplar_set[class_name]["x"] = self.examplar_set[class_name]["x"][:m, :]
+            self.examplar_set[class_name]["y"] = self.examplar_set[class_name]["y"][:m, :]
 
     @torch.no_grad()
     def construct_examplar_set(self, phi: 'iCaLRNet', m: int, temp: bool = False) -> Union[None, Dict[str, torch.Tensor]]:
@@ -354,7 +353,7 @@ class Cifar100(data.Dataset):
                     val_num = int(len(per_class_idx) * train_val_ratio)
                     idx = np.arange(len(per_class_idx))
                     np.random.shuffle(idx)
-                    val_idx[class_num], train_idx[class_num] = idx[:val_num], idx[val_num:]
+                    val_idx[class_num], train_idx[class_num] = per_class_idx[idx[:val_num]],  per_class_idx[idx[val_num:]]
                 np.savez(p, val=val_idx, train=train_idx)
             else:
                 z = np.load(p, allow_pickle=True)
@@ -410,7 +409,7 @@ if __name__ == "__main__":
         x: torch.Tensor
         y: torch.Tensor
 
-        net.set_task(task=task)
+        net.add_task(task=task)
         c100.set_task(task=task)
 
         # set g
