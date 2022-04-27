@@ -368,7 +368,7 @@ class iCaLRNet(nn.Module):
         else:
             return feature_vectores
     
-    def set_task(self, task: Union[str, List[str]]):
+    def add_task(self, task: Union[str, List[str]]):
         self.current_task = task
         if isinstance(task, str):
             self.seen_classes.append(task)
