@@ -6,10 +6,10 @@ from typing import *
 from pathlib import PosixPath, WindowsPath, Path
 
 # Third-party Library
-import PIL
 import torch
 import numpy as np
 import pandas as pd
+import PIL.Image as Image
 import matplotlib.pyplot as plt
 from colorama import Fore, init
 from terminaltables import SingleTable
@@ -108,6 +108,7 @@ class CifarTaskSetter:
         self.all_class = given_task
         self.task_list = task_list
         self._gen_converter()
+        return self.task_list
 
     def shuffle(self):
         import random
@@ -359,7 +360,8 @@ class ContinualLearningEvaluator:
 
 
 def visualize(image: Union[torch.Tensor, np.ndarray],
-              cls: Union[None, int, str, torch.Tensor, np.ndarray] = None) -> np.ndarray:
+              cls: Union[None, int, str, torch.Tensor, np.ndarray] = None,
+              pil: bool = False) -> Union[np.ndarray, Image.Image]:
     """
     visualize will visualize given image(s) and return a grid of all given image(s) with label(s) (if provided)
 
@@ -373,13 +375,13 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
     num = 1 if image.ndim == 3 else image.shape[0]
     cls = np.array([""] * num) if cls is None else cls
     cls = np.array([cls]) if isinstance(cls, (int, str)) else cls
-    cls: np.ndarray = cls.detach().numpy() if isinstance(cls, torch.Tensor) else cls
+    cls: np.ndarray = cls.detach().cpu().numpy() if isinstance(cls, torch.Tensor) else cls
     cls = cls[:, 0] if cls.ndim == 2 and cls.shape[1] >= 2 else cls
     try:
         assert num == len(cls), f"{num} images with {len(cls)} labels"
     except TypeError:
         cls = np.array([cls.item()])
-    image: torch.Tensor = image.detach() if isinstance(image, torch.Tensor) else torch.from_numpy(image)
+    image: torch.Tensor = image.detach().cpu() if isinstance(image, torch.Tensor) else torch.from_numpy(image)
 
     if image.ndim == 3:
         image = image.unsqueeze(0)
@@ -416,10 +418,15 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
                     ax[i][j].set_title(converter(cls[idx]))
                 ax[i][j].set_axis_off()
     # plt.subplots_adjust()
-    canvas = fig.canvas
+    canvas = FigureCanvas(fig)
     canvas.draw()
+    s, (width, height) = canvas.print_to_buffer()
 
-    return np.frombuffer(canvas.tostring_rgb(), dtype='uint8').reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    image = np.fromstring(s, dtype=np.uint8).reshape((height, width, 4))
+    if pil:
+        return Image.fromarray(image)
+    else:
+        return image
 
 
 def legal_converter(path: Path) -> Path:
@@ -460,19 +467,20 @@ if __name__ == "__main__":
     # print(lc)
 
     # test evaluator
-    ce = ClassificationEvaluator(num_class=10)
-    y = np.repeat(np.arange(0, 10)[np.newaxis, :], repeats=10).flatten()
-    pred_y = np.zeros(shape=(100))
-    # top1
-    # ce.add_batch(pred_y=pred_y, y=y)
-    # ce.add_batch_top1(y_pred=y, y=y)
-    # top5
-    pred_y = np.random.random(size=(100, 10))
-    ce.add_batch_top1(y_pred=pred_y, y=y)
-    ce.add_batch_top5(y_pred=pred_y, y=y)
-
-    print(ce.accuracy(top=1))
-    print(ce.accuracy(top=5))
-    print(ce.precision(top=1))
+    # ce = ClassificationEvaluator(num_class=10)
+    # y = np.repeat(np.arange(0, 10)[np.newaxis, :], repeats=10).flatten()
+    # pred_y = np.zeros(shape=(100))
+    # # top1
+    # # ce.add_batch(pred_y=pred_y, y=y)
+    # # ce.add_batch_top1(y_pred=y, y=y)
+    # # top5
+    # pred_y = np.random.random(size=(100, 10))
+    # ce.add_batch_top1(y_pred=pred_y, y=y)
+    # ce.add_batch_top5(y_pred=pred_y, y=y)
+    #
+    # print(ce.accuracy(top=1))
+    # print(ce.accuracy(top=5))
+    # print(ce.precision(top=1))
 
     # print(ce.make_grid(title="Epoch 1", top=1, labels=cifar100_labels[:10]))
+    pass
