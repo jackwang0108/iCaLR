@@ -87,7 +87,7 @@ class ExamplarSet(data.Dataset):
             self.examplar_set[class_name]["y"] = self.examplar_set[class_name]["y"][:self.m, :]
 
     @torch.no_grad()
-    def construct_examplar_set(self, phi: 'iCaLRNet', temp: bool = False) -> Union[None, Dict[str, torch.Tensor]]:
+    def construct_examplar_set(self, phi: 'iCaLRNet', m: int, temp: bool = False) -> Union[None, Dict[str, torch.Tensor]]:
         label_feature: Dict[str, torch.Tensor] = {}
 
         p = next(phi.parameters())
@@ -100,18 +100,27 @@ class ExamplarSet(data.Dataset):
             label_feature[sub_label] = phi.feature_extractor(x).cpu()
             # label_feature[sub_label] = phi.feature_extractor(self._temp_data[sub_label]["x"])
             # mean_feature = mu
-            mean_feature = torch.mean(label_feature[sub_label], dim=0)
+            mean_feature = torch.mean(label_feature[sub_label], dim=0, keepdim=True)
 
             # Attention: a little modification for speeding up calculation
-            idx = torch.argsort(((label_feature[sub_label] - mean_feature) ** 2).sum(dim=1), descending=True)
+            # idx = torch.argsort(((label_feature[sub_label] - mean_feature) ** 2).sum(dim=1), descending=True)
 
-            save_num = getattr(self, "m", self.k // len(self._temp_data))
-            if save_num > (l := len(self._temp_data[sub_label]["x"])):
-                repeat_time = save_num // l
-                save_idx = idx.repeat(repeats=(1, repeat_time)).squeeze()
-                save_idx = torch.hstack((save_idx, idx[:save_num - len(save_idx)]))
-            else:
-                save_idx = idx[:save_num]
+
+            # save_num = getattr(self, "m", self.k // len(self._temp_data))
+            # if save_num > (l := len(self._temp_data[sub_label]["x"])):
+            #     repeat_time = save_num // l
+            #     save_idx = idx.repeat(repeats=(1, repeat_time)).squeeze()
+            #     save_idx = torch.hstack((save_idx, idx[:save_num - len(save_idx)]))
+            # else:
+            #     save_idx = idx[:save_num]
+
+            # Attention: Original Construct Examplar Set
+            save_idx = []
+            last_mean = torch.zeros(size=(1, 512))
+            for i in range(m):
+                now_min_idx = torch.argmin(torch.norm(mean_feature - (label_feature[sub_label] + last_mean * i) / (i + 1), dim = 1))
+                save_idx.append(now_min_idx)
+                last_mean = torch.mean(label_feature[sub_label][save_idx, :], dim=0, keepdim=True)
 
             if not temp:
                 self.examplar_set[sub_label] = {}
