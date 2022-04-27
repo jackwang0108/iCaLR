@@ -17,13 +17,14 @@ from torch.utils.tensorboard import SummaryWriter
 # Standard Library
 import copy
 import logging
+import argparse
 import datetime
 from typing import *
 from pathlib import Path
 
 
 # Third-party Library
-from colorama import Fore, init
+from colorama import Fore, Style, init
 
 init(autoreset=True)
 
@@ -42,13 +43,13 @@ class CLTrainer:
 
     default_dtype: torch.dtype = torch.float32
 
-    def __init__(self, network: iCaLRNet, task_list: List[Tuple[str]], dry_run: bool=True, log: bool = False) -> None:
+    def __init__(self, network: iCaLRNet, task_list: List[Tuple[str]], test_method: int=1, dry_run: bool=True, log: bool = False) -> None:
         self.train_list = task_list
         self.net = network.to(device=self.available_device, non_blocking=True)
         self.log = log
         self.dry_run: bool = dry_run
+        self.test_method = test_method
 
-        self.optim = optim.Adam(self.net.parameters())
 
         # summary writer
         suffix = self.net.__class__.__name__ + f"/num_task_{len(self.train_list[0])}"
@@ -57,7 +58,7 @@ class CLTrainer:
             self.writer = SummaryWriter(log_dir=writer_path)
         
         # datasets
-        self.train_set = Cifar100(split="train", examplar_set=self.net.examplar_set)
+        self.train_set = Cifar100(split="train", examplar_set=self.net.examplar_set, trainval_ratio=0.2)
         self.val_set = Cifar100(split="val").new_only(flag=True)
 
         assert (a:=network.target_dataset) == (b:=self.train_set.__name__), f"{Fore.RED}In-cooperate network and dataset, network is for {a}, but dataset is {b}"
@@ -100,15 +101,19 @@ class CLTrainer:
         
         # clean logs
         import re
-        with self.log_path.open(mode="r+") as f:
-            lines = f.readlines()
-            for i in range(len(lines)):
-                lines[i] = re.sub(r"..\d\dm", "", lines[i])
-            f.seek(0)
-            f.write("".join(lines[:-1]))
+        if self.log:
+            with self.log_path.open(mode="r+") as f:
+                lines = f.readlines()
+                for i in range(len(lines)):
+                    lines[i] = re.sub(r"..\d\dm", "", lines[i])
+                f.seek(0)
+                f.write("".join(lines[:-1]))
 
     def train(self, n_epcoh: int = 70, early_stop: int = 20, bsize: int = 128):
         task_list = self.train_list
+        test_method = self.test_method
+
+        self.optim = optim.Adam(self.net.parameters())
 
         self.logger.info(f"n_epoch: {n_epcoh}")
         self.logger.info(f"early_stop: {early_stop}")
@@ -180,7 +185,7 @@ class CLTrainer:
                     y_pred = self.net(x)
                     loss: Union[torch.Tensor, Tuple[torch.Tensor]] = self.net.loss_func(y_pred=y_pred, y=y)
 
-                    # dont forget
+                    # don't forget
                     self.optim.zero_grad()
 
                     if isinstance(loss, tuple):
@@ -212,13 +217,24 @@ class CLTrainer:
                         x = x.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
                         y = y.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
 
-                        # Warning 有问题, Examplar set 一开始取得不准
-                        temp_examplar_set = net.examplar_set.construct_examplar_set(phi = self.net, temp=True)
-                        y_classify = self.net.inference(x=x, temp_examplar_set=temp_examplar_set)
+                        if test_method == 0:
+                            # Warning: 有问题, Examplar set 一开始取得不准
+                            temp_examplar_set = net.examplar_set.construct_examplar_set(phi = self.net, temp=True)
+                            y_classify = self.net.inference(x=x, temp_examplar_set=temp_examplar_set)
+                        elif test_method == 1:
+                            # self.net.eval()
+                            y_classify = self.net(x, False)
+                            y_classify = torch.argmax(y_classify, dim=1)
+                            # self.net.train()
+                        else:
+                            assert False, f"Not Implemented for test method: {test_method}"
 
                         # classification evaluates
                         all_num += len(y)
-                        acc_num += sum(y[:, 0] == y_classify[:, 0])
+                        if test_method == 0:
+                            acc_num += sum(y[:, 0] == y_classify[:, 0])
+                        elif test_method == 1:
+                            acc_num += sum(y[:, 0] == y_classify)
 
                 top1_current_acc = acc_num / all_num
                 # save checkpoint
@@ -252,7 +268,8 @@ class CLTrainer:
             self.logger.info(f"{Fore.GREEN}Task: [{task_idx:>{t_digit}}|{task}], end at Epoch: [{epoch:>{e_digit}}/{n_epcoh}], switch to best model, best Acc: [{max_top1_acc:>.5f}]")
 
             # Attention: construct examplar set, Algorithm 4: iCaRL CONSTRUCTEXEMPLARSET
-            self.train_set.examplar_set.construct_examplar_set(phi=self.net)
+            seen_class_num = len(self.net.examplar_set.examplar_set.keys()) + len(task)
+            self.train_set.examplar_set.construct_examplar_set(phi=self.net, m=2000 // seen_class_num)
 
             # Attention: reduce examplar set, Algorithm 5: iCaRL REDUCEEXEMPLARSET
             self.train_set.examplar_set.reduce_examplar_set()
@@ -268,6 +285,7 @@ class CLTrainer:
                     for idx, x, y in val_loader:
                         x = x.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
                         y = y.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
+
                         y_classify = self.net.inference(x=x)
 
                         # log
@@ -288,13 +306,38 @@ class CLTrainer:
         return self.net
 
 
+def get_args() -> argparse.Namespace:
+    def green(s): return f"{Fore.GREEN}{s}{Style.RESET_ALL}"
+    def yellow(s): return f"{Fore.YELLOW}{s}{Style.RESET_ALL}"
+    def blue(s): return f"{Fore.BLUE}{Style.BRIGHT}{s}{Style.RESET_ALL}"
+
+    parser = argparse.ArgumentParser(description=blue("iCaRL Pytorch Implementation training util by Shihong Wang (Jack3Shihong@gmail.com)"))
+    parser.add_argument("-v", "--version", action="version", version="%(prog)s v1.0")
+    parser.add_argument("-s", "--shuffle", dest="shuffle", default=False, action="store_true", help=green("If shuffle the training classes"))
+    parser.add_argument("-d", "--dry_run", dest="dry_run", default=False, action="store_true", help=green("If run without saving tensorboard amd network params to runs and checkpoints"))
+    parser.add_argument("-l", "--log", dest="log", default=False, action="store_true", help=green("If save terminal output to log"))
+    parser.add_argument("-n", "--num_class", dest="num_class", type=int, default=2, help=yellow("Set class number of each task"))
+    parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=100, help=yellow("Set maximum training epoch of each task"))
+    parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=20, help=yellow("Set maximum early stop epoch counts"))
+    parser.add_argument("-tm", "--test_method", dest="test_method", type=int, default=1, help=yellow("Set test method, 0 for classify, 1 for argmax"))
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    # Notes: Parameters
-    if_shuffle = True
-    num_class_per_task = 2
+
+    # get arg
+    args = get_args()
+    
+    # Attention: Parameters
+    if_shuffle = args.shuffle
+    num_class_per_task = args.num_class
+    dry_run = args.dry_run
+    log = args.log
+    n_epoch = args.n_epoch
+    early_stop = args.early_stop
+    test_method = args.test_method
     
     # Bug?: 在训练到后面的任务的时候, cl的平均acc就成0了
+    # * 目前正在用条件断点测试
 
     task_list = []
     if if_shuffle:
@@ -306,11 +349,16 @@ if __name__ == "__main__":
     e = ExamplarSet()
     net = iCaLRNet(num_class=100, target_dataset="Cifar100", examplar_set=e)
     net.__fe__ += "32"
-    trainer = CLTrainer(network=net, task_list=task_list, dry_run=False, log=True)
+    trainer = CLTrainer(network=net, task_list=task_list, test_method=test_method, dry_run=dry_run, log=log)
     try:
-        net = trainer.train(n_epcoh=70, early_stop=5)
+        deled = False
+        net = trainer.train(n_epcoh=n_epoch, early_stop=early_stop)
     except KeyboardInterrupt:
+        deled = True
         del trainer, net
+    finally:
+        if not deled:
+            del trainer, net
 
     # debug, record the GPU memory use
     # from pytorch_memlab import LineProfiler
