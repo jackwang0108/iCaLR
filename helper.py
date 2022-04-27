@@ -77,22 +77,50 @@ class DatasetPath:
 
 
 # load label
-class Cifar100Labels:
+class CifarTaskSetter:
 
     def __init__(self) -> None:
+        import copy
         with DatasetPath.Cifar100.meta.open(mode="rb") as f:
             meta: Dict[str, Any] = pickle.load(f)
-        self.cifar100_labels = meta["fine_label_names"]
-        self.cifar100_label2num = dict(zip(self.cifar100_labels, range(len(self.cifar100_labels))))
-        self.cifar100_num2label = dict(zip(self.cifar100_label2num.values(), self.cifar100_label2num.keys()))
+        self.all_class = meta["fine_label_names"]
+        self.origin_class = copy.deepcopy(meta["fine_label_names"])
+        self._gen_converter()
+    
+    def _gen_converter(self):
+        self.label2num = dict(zip(self.all_class, range(len(self.all_class))))
+        self.num2label = dict(enumerate(self.all_class))
+        _old_label2num = dict(zip(self.origin_class, range(len(self.origin_class))))
+        self.old2new = {_old_label2num[name]:self.label2num[name] for name in self.origin_class}
+
+    def gen_task_list(self, num_task: int = 10) -> List[Tuple[str]]:
+        task_list = []
+        for i in range(0, len(self.all_class), num_task):
+            task_list.append(tuple(self.all_class[i: i+num_task]))
+        self.task_list = task_list
+        self._gen_converter()
+        return task_list
+    
+    def set_task_list(self, task_list: List[Tuple[str]]):
+        given_task = []
+        for task in task_list:
+            given_task.extend(task)
+        self.all_class = given_task
+        self.task_list = task_list
+        self._gen_converter()
 
     def shuffle(self):
         import random
-        random.shuffle(self.cifar100_labels)
-        self.cifar100_label2num = dict(zip(self.cifar100_labels, range(len(self.cifar100_labels))))
-        self.cifar100_num2label = dict(zip(self.cifar100_label2num.values(), self.cifar100_label2num.keys()))
+        random.shuffle(self.all_class)
+        self._gen_converter()
+    
+    def get_name(self, class_num: int) -> str:
+        return self.num2label[class_num]
 
-cifar100_labels = Cifar100Labels()
+    def get_num(self, class_name: str) -> int:
+        return self.label2num[class_name]
+
+cifar_task_setter = CifarTaskSetter()
 
 # 多分类评价指标从confusion matrix中计算参考: https://zhuanlan.zhihu.com/p/147663370
 # 这里太麻烦了, 就没有使用
@@ -366,7 +394,7 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
     if isinstance(cls[0], str):
         converter = lambda x: x
     else:
-        converter = lambda x: cifar100_labels.cifar100_num2label[x]
+        converter = lambda x: cifar_task_setter.get_name(x)
 
     ax: List[axes.Axes]
     fig: figure.Figure

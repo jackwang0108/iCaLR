@@ -13,7 +13,7 @@ import torch
 import torch.utils.data as data
 
 # My Library
-from helper import ProjectPath, DatasetPath, cifar100_labels
+from helper import ProjectPath, DatasetPath, cifar_task_setter
 
 
 class ExamplarSet(data.Dataset):
@@ -61,7 +61,7 @@ class ExamplarSet(data.Dataset):
             # idx = torch.where(y[:, 0] == sub_label)[0].tolist()
             idx = np.where(y[:, 0] == sub_label)[0].tolist()
             # if self._temp_data.get(s := cifar100_num2label[sub_label.item()], None) is not None:
-            if (s := cifar100_labels.cifar100_num2label[sub_label.item()]) in self._temp_data.keys():
+            if (s := cifar_task_setter.get_name(sub_label.item())) in self._temp_data.keys():
                 self._temp_data[s]["x"] = np.concatenate(
                     [self._temp_data[s]["x"], x[idx]], axis=0
                 )
@@ -126,13 +126,13 @@ class ExamplarSet(data.Dataset):
                 self.examplar_set[sub_label] = {}
                 self.examplar_set[sub_label]["x"] = self._temp_data[sub_label]["x"][save_idx]
                 y = self._temp_data[sub_label]["y"][save_idx]
-                y[:, 1] = cifar100_labels.cifar100_label2num[sub_label]
+                y[:, 1] = cifar_task_setter.get_num(sub_label)
                 self.examplar_set[sub_label]["y"] = y
             else:
                 t[sub_label] = {}
                 t[sub_label]["x"] = torch.from_numpy(self._temp_data[sub_label]["x"][save_idx])
                 y = self._temp_data[sub_label]["y"][save_idx]
-                y[:, 1] = cifar100_labels.cifar100_label2num[sub_label]
+                y[:, 1] = cifar_task_setter.get_num(sub_label)
                 t[sub_label]["y"] = torch.from_numpy(y)
         if temp:
             return t
@@ -192,12 +192,14 @@ class Cifar100(data.Dataset):
         self._image, self._label, self.class2idx = self._load(
             train_val_ratio=trainval_ratio, refresh=refresh)
 
-        assert split == "train" and (
-            not examplar_set is None) or split != "train", f"{Fore.RED}Training set must have examplar set"
+        assert examplar_set is None and split != "train"\
+            or split=="train", f"{Fore.RED}Only training set have examplar set, but you tried to set examplar set to {self.split} set"
+        assert split == "train" and (not examplar_set is None) \
+            or split != "train", f"{Fore.RED}Training set must have examplar set"
         if split == "train":
             self.examplar_set: ExamplarSet = examplar_set
 
-        self._new_only_flag = False
+        self._only_current_flag = False
 
         self.current_task: Union[None, Tuple[str]] = None
 
@@ -221,7 +223,7 @@ class Cifar100(data.Dataset):
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: (index, image, label) pairs, image of size [1, channel, width, height], label of size [1, 3], label[1]=[gt, examplar set id, q]
         """
-        if not self._new_only_flag:
+        if not self._only_current_flag and getattr(self, "examplar_set", None) is not None:
             if index < (l := len(self.examplar_set)):
                 return self.examplar_set.__getitem__(index)
         else:
@@ -248,13 +250,13 @@ class Cifar100(data.Dataset):
         return self
 
     def set_all_task(self):
-        global cifar100_labels
-        self._set_visible_class(cifar100_labels.cifar100_labels)
-        self.current_task = cifar100_labels.cifar100_labels
+        global cifar_task_setter
+        self._set_visible_class(cifar_task_setter.all_class)
+        self.current_task = cifar_task_setter.all_class
         return self
 
-    def new_only(self, flag: bool = True):
-        self._new_only_flag = flag
+    def only_current(self, flag: bool = True):
+        self._only_current_flag = flag
         return self
 
     def _set_visible_class(self, visible_class: Union[int, str, Iterable[int], Iterable[str]]) -> None:
@@ -278,7 +280,7 @@ class Cifar100(data.Dataset):
         # get converter
         if s[0] == "str":
             def _converter(cls):
-                return self.class2idx[cifar100_labels.cifar100_label2num[cls]]
+                return self.class2idx[cifar_task_setter.get_num(cls)]
         else:
             def _converter(cls):
                 return self.class2idx[cls]
@@ -313,8 +315,12 @@ class Cifar100(data.Dataset):
             #     np.array(test_data[b"fine_labels"]))
 
             # get num2idx dict
-            class2idx: Dict[int, np.ndarray] = {i: np.where(
-                label == i)[0] for i in cifar100_labels.cifar100_num2label.keys()}
+            class2idx: Dict[int, np.ndarray] = {cifar_task_setter.old2new[i]: np.where(
+                label == i)[0] for i in cifar_task_setter.old2new.keys()}
+
+            # change from old label to new label
+            for new_class, idx in class2idx.items():
+                label[idx] = new_class
         else:
             with DatasetPath.Cifar100.train.open(mode="rb") as f:
                 # Note: {b"filenames": List[bytes],
@@ -332,8 +338,12 @@ class Cifar100(data.Dataset):
             #     np.array(train_data[b"fine_labels"]))
 
             # get num2idx dict
-            class2idx: Dict[int, np.ndarray] = {i: np.where(
-                label == i)[0] for i in cifar100_labels.cifar100_num2label.keys()}
+            class2idx: Dict[int, np.ndarray] = {cifar_task_setter.old2new[i]: np.where(
+                label == i)[0] for i in cifar_task_setter.num2label.keys()}
+            
+            # change from old label to new label
+            for new_class, idx in class2idx.items():
+                label[idx] = new_class
 
             # decide for train and val
             if not (p := ProjectPath.base.joinpath("train_val.npz")).exists() or refresh:
@@ -364,7 +374,7 @@ class Cifar100(data.Dataset):
 
             # update num2idx dict
             class2idx: Dict[int, np.ndarray] = {i: np.where(
-                label == i)[0] for i in cifar100_labels.cifar100_num2label.keys()}
+                label == i)[0] for i in cifar_task_setter.num2label.keys()}
 
         # import warnings
         # warnings.warn(

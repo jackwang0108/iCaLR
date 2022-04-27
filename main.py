@@ -31,7 +31,7 @@ init(autoreset=True)
 # My Library
 from network import iCaLRNet
 from dataset import Cifar100, ExamplarSet
-from helper import ProjectPath, legal_converter, cifar100_labels, system
+from helper import ProjectPath, legal_converter, cifar_task_setter, system
 from helper import ClassificationEvaluator
 
 
@@ -59,7 +59,10 @@ class CLTrainer:
         
         # datasets
         self.train_set = Cifar100(split="train", examplar_set=self.net.examplar_set, trainval_ratio=0.2)
-        self.val_set = Cifar100(split="val").new_only(flag=True)
+        self.val_set = Cifar100(split="val").only_current(flag=True)
+
+        self.optim = optim.Adam(self.net.parameters())
+        # optim
 
         assert (a:=network.target_dataset) == (b:=self.train_set.__name__), f"{Fore.RED}In-cooperate network and dataset, network is for {a}, but dataset is {b}"
 
@@ -113,7 +116,6 @@ class CLTrainer:
         task_list = self.train_list
         test_method = self.test_method
 
-        self.optim = optim.Adam(self.net.parameters())
 
         self.logger.info(f"n_epoch: {n_epcoh}")
         self.logger.info(f"early_stop: {early_stop}")
@@ -159,6 +161,10 @@ class CLTrainer:
             
             self.net.set_task(task=task)
             self.train_set.set_task(task=task)
+
+            # Notes: renew optim and grid
+            self.optim = optim.Adam(self.net.parameters())
+            self.optim.zero_grad()
 
             classification_evaluator = ClassificationEvaluator(num_class=len(task))
 
@@ -282,6 +288,7 @@ class CLTrainer:
                 p_acc_num = 0
                 with torch.no_grad():
                     self.val_set.set_task(task=past_task)
+                    self.val_set.only_current()
                     for idx, x, y in val_loader:
                         x = x.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
                         y = y.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
@@ -337,14 +344,13 @@ if __name__ == "__main__":
     test_method = args.test_method
     
     # Bug?: 在训练到后面的任务的时候, cl的平均acc就成0了
-    # * 目前正在用条件断点测试
+    # Notes: 
+    #   * 1. 第一个问题是每个task开始的时候需要重新初始化optimizer, 因为里面保存着移动平均值, 否则后续的几个任务就训练不动了 
 
-    task_list = []
+    # generate task list
     if if_shuffle:
-        cifar100_labels.shuffle()
-
-    for i in range(0, len(cifar100_labels.cifar100_labels), num_class_per_task):
-        task_list.append(tuple(cifar100_labels.cifar100_labels[i: i+num_class_per_task]))
+        cifar_task_setter.shuffle()
+    task_list = cifar_task_setter.gen_task_list()
 
     e = ExamplarSet()
     net = iCaLRNet(num_class=100, target_dataset="Cifar100", examplar_set=e)
