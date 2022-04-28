@@ -305,13 +305,14 @@ class DistillationLoss(nn.Module):
         super().__init__()
         nn.BCELoss()
         self._bce_loss = nn.BCEWithLogitsLoss()
+        self._sigmoid = nn.Sigmoid()
     
     def forward(self, y_pred: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         # y_pred: [batch_size, len(seen_class)]
         # y: [batch_size, seen_class]
         q = y
-        g = y_pred
-        return self._bce_loss(y_pred, y)
+        g = self._sigmoid(y_pred)
+        return self._bce_loss(g, q)
 
 
 
@@ -320,7 +321,7 @@ class iCaLRNet(nn.Module):
     __name__ = "iCaLRNet"
     __fe__ = "ResNet"
 
-    def __init__(self, num_class: Union[None, str], target_dataset: str, examplar_set: ExamplarSet) -> None:
+    def __init__(self, num_class: Union[None, str], target_dataset: str, examplar_set: ExamplarSet, loss_func_type: int) -> None:
         """
         __init__ iCaLRNet implementation
 
@@ -345,7 +346,13 @@ class iCaLRNet(nn.Module):
             
         """
         super().__init__()
+        
+        if num_class is None:
+            self.gradually = True
+        else:
+            self.gradually = False
 
+        self.loss_func_type = loss_func_type
         self.num_class = num_class
         self.target_dataset = target_dataset
         self.feature_extractor = _ResNetBase(target_dataset=target_dataset, num_blocks=[3, 4, 6, 3], num_class=None)
@@ -360,14 +367,18 @@ class iCaLRNet(nn.Module):
 
         self._cross_entropy_loss = nn.CrossEntropyLoss()
         self._distillation_loss = DistillationLoss()
+        self._bce_loss = nn.BCEWithLogitsLoss()
     
 
     def forward(self, x: torch.Tensor, feature: bool = True) -> torch.Tensor:
         feature_vectores = self.feature_extractor(x)
         if self.training or not feature:
-            train_only = self.weights(feature_vectores)
-            g = self._sigmoid(train_only[:, :len(self.seen_classes)])
-            return g
+            if self.gradually:
+                train_only = self.weights(feature_vectores)
+                # g = self._sigmoid(train_only[:, :len(self.seen_classes)])
+                return train_only[:, :len(self.seen_classes)]
+            else:
+                return self.weights(feature_vectores)
         else:
             return feature_vectores
     
@@ -394,12 +405,23 @@ class iCaLRNet(nn.Module):
         # get old example idx
         old_idx = torch.where(y[:, 1] != -1)[0]
 
-        new_ce_loss = self._cross_entropy_loss(y_pred[new_idx], y[new_idx, 0].long())
-        if len(old_idx) > 0:
-            old_num = len(self.seen_classes) - len(self.current_task)
-            old_distill_loss = self._distillation_loss(y_pred[old_idx, :old_num], y[old_idx, 2:2+old_num])
-            return new_ce_loss, old_distill_loss
-        return new_ce_loss
+        # My Loss Func
+        if self.loss_func_type == 0:
+            new_ce_loss = self._cross_entropy_loss(y_pred[new_idx], y[new_idx, 0].long())
+            if len(old_idx) > 0:
+                old_num = len(self.seen_classes) - len(self.current_task)
+                old_distill_loss = self._distillation_loss(y_pred[old_idx, :old_num], y[old_idx, 2:2+old_num])
+                return new_ce_loss, old_distill_loss
+            return new_ce_loss
+        else:
+            # Other's Loss Func (https://github.com/DRSAD/iCaRL/tree/9768d45a86d7b43acfcf539ad84ae6d88f47d9e7)
+            target = self.get_one_hot(y[:, 0])
+            old_class_num = len(self.seen_classes) - len(self.current_task)
+            if old_class_num > 0:
+                # target[old_idx, :old_class_num] = y[old_idx, 2: 2 + old_class_num]
+                target[..., :old_class_num] = y[..., 2: 2 + old_class_num]
+            loss = self._bce_loss(y_pred, target)
+            return loss
 
 
     @torch.no_grad()
@@ -424,6 +446,12 @@ class iCaLRNet(nn.Module):
             distance = torch.sqrt(((xx - mu_all)**2).sum(dim=1))
             result.append(torch.argsort(distance))
         return torch.vstack(result)
+
+    def get_one_hot(self, y: torch.Tensor) -> torch.Tensor:
+        assert y.ndim == 1, f"{Fore.RED}Invaliad shape, should be [N], but you offered: {y.shape}"
+        one_hot = torch.zeros(size=(y.shape[0], len(self.seen_classes))).to(device=y.device, dtype=y.dtype)
+        one_hot = one_hot.scatter(dim=1, index=y.view(-1, 1).long(), value=1.0)
+        return one_hot
 
 
 if __name__ == "__main__":

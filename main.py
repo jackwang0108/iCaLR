@@ -6,6 +6,7 @@ Notes:
         2. 如果必须要用Tensor, 或者需要使用非训练中的网络来进行计算, 一定要使用torch.no_grad
         3. 数据集中尽量使用np.ndarray, 然后可以用上torchvision.transforms
         4. 写完了之后, 多用用logging, 便于保留每一次训练结果
+        5. 图像的任务一定要用一些基本的数据增强, 提点非常恐怖, 测试阶段则要看原文用的什么
 """
 
 # Torch Library
@@ -118,6 +119,8 @@ class CLTrainer:
         test_method = self.test_method
 
 
+        loss_func = "Other Implementation Loss Func" if self.net.loss_func_type == 1 else "My Implementation Loss Func"
+        self.logger.info(f"loss_func: {loss_func}")
         self.logger.info(f"n_epoch: {n_epcoh}")
         self.logger.info(f"early_stop: {early_stop}")
         self.logger.info(f"task_list: {task_list}")
@@ -178,6 +181,9 @@ class CLTrainer:
                     for seen_class in self.train_set.examplar_set.examplar_set.keys():
                         x = torch.from_numpy(self.train_set.examplar_set.examplar_set[seen_class]["x"])
                         x = x.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
+                        # Notes: 下面的这句话会造成内存泄漏, 因为链式索引
+                        # Notes: 首先是索引一个视图, 然后对视图进行索引, 那么视图就会被保存
+                        # q = self.net(x)[:][:,:len(self.net.seen_classes)-len(task)]
                         q = self.net(x)[:, :len(self.net.seen_classes)-len(task)].clone()
                         self.train_set.examplar_set.update_q(class_name=seen_class, q=q)
             
@@ -282,7 +288,7 @@ class CLTrainer:
 
             # Attention: construct examplar set, Algorithm 4: iCaRL CONSTRUCTEXEMPLARSET
             seen_class_num = len(self.net.examplar_set.examplar_set.keys()) + len(task)
-            # Notes: Exmaplar Set, task_idx = 3, 没有can
+            # Bug: Exmaplar Set, task_idx = 3, 没有can, fixed
             self.train_set.examplar_set.construct_examplar_set(phi=self.net, m=2000 // seen_class_num)
 
             # Attention: reduce examplar set, Algorithm 5: iCaRL REDUCEEXEMPLARSET
@@ -336,6 +342,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=20, help=yellow("Set maximum early stop epoch counts"))
     parser.add_argument("-tm", "--test_method", dest="test_method", type=int, default=1, help=yellow("Set test method, 0 for classify, 1 for argmax"))
     parser.add_argument("-nt", "--num_task", dest="num_task", type=int, default=None, help=yellow("All predict class num, if set to None, will add gradually"))
+    parser.add_argument("-lf", "--loss_func", dest="loss_func", type=int, default=0, help=yellow("Select loss function type, 1 for other implementation, 0 for my implementation"))
     parser.add_argument("-m", "--message", dest="message", type=str, default=f"", help=yellow("Training digest"))
     return parser.parse_args()
 
@@ -353,6 +360,7 @@ if __name__ == "__main__":
     early_stop = args.early_stop
     test_method = args.test_method
     num_task = args.num_task
+    loss_func_type = args.loss_func
 
     # generate task list
     if if_shuffle:
@@ -379,10 +387,10 @@ if __name__ == "__main__":
     #     ]
     # )
 
-    # Bug?: 训练的过程中会缓慢的有GPU缓存泄漏  
+    # Bug?: 训练的过程中会缓慢的有GPU缓存泄漏, fixed, 有一个链式索引
 
     e = ExamplarSet()
-    net = iCaLRNet(num_class=num_task, target_dataset="Cifar100", examplar_set=e)
+    net = iCaLRNet(num_class=num_task, target_dataset="Cifar100", examplar_set=e, loss_func_type=loss_func_type)
     net.__fe__ += "32"
     trainer = CLTrainer(network=net, task_list=task_list, test_method=test_method, dry_run=dry_run, log=log)
     try:
