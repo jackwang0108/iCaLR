@@ -24,11 +24,44 @@ Notes:
 
 ## Run
 
-Only thing you need to do is make a soft link to `Cifar100` datasets under the `dataset ` folder.
+The **first** thing you need to do is make a soft link to `Cifar100` datasets under the `dataset ` folder.
+
+For me, it is
+
+- Windows
+
+```shell
+C:\Users\JackWang\Projects\iCaRL> mkdir datasets
+C:\Users\JackWang\Projects\iCaRL> cd datasets
+C:\Users\JackWang\Projects\iCaRL> mklink /D cifar100-windows <path-to-cifar100>
+```
+
+- Ubuntu
+
+```shell
+jack@Jack:~\Projects\iCaRL$ mkdir datasets
+jack@Jack:~\Projects\iCaRL$ cd datasets
+jack@Jack:~\Projects\iCaRL$ ln -s cifar100-linux <path-to-cifar100>
+```
+
+Then, the **second** steps is run the command below, and you will see the information.
+
+```shell
+python3 main.py -h
+```
 
 ## Results
 
-Coming Soon...
+Notes: I tried my best to re-implement all the details in the paper and I believe my operation are correct. However, due to the difference in evaluation method, there is still performance gap between my result and original result.
+
+Moreover, I find a [repository](https://github.com/DRSAD/iCaRL/tree/9768d45a86d7b43acfcf539ad84ae6d88f47d9e7 "repository") which totally re-implements all operations including the evaluation method. But after reviewing the codes, I find some KEY STEPS in the evaluation that I do not think is objective. So, I decide not to re-implement the biased performance code.
+
+
+Since I have invest two weeks in this project and find the biased evaluation, I need to go on and move to next algorithm to implement . I hope someone could find the bugs (if there is in my code) and fix the gap between my code.
+
+
+The biased performace evaluation code and the reseaon why I think they are biased in the listed repository are listed below.
+
 
 ## Illustrations
 
