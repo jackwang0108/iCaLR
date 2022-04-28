@@ -10,7 +10,9 @@ init(autoreset=True)
 
 # Torch Library
 import torch
+import torch.nn as nn
 import torch.utils.data as data
+import torchvision.transforms as transforms
 
 # My Library
 from helper import ProjectPath, DatasetPath, cifar_task_setter
@@ -152,7 +154,8 @@ class ExamplarSet(data.Dataset):
              np.zeros(shape=(q.shape[0], all_length - 2 - q.shape[1]))
             )
         )
-        # new = torch.hstack((self.examplar_set[class_name]["y"][:, :2], q.cpu(), torch.zeros(q.size(0), all_length - 2 - q.size(1))))
+        new[:, 1] = 1
+        del self.examplar_set[class_name]["y"]
         self.examplar_set[class_name]["y"] = new
         return torch.from_numpy(new)
 
@@ -202,6 +205,7 @@ class Cifar100(data.Dataset):
 
         self.current_task: Union[None, Tuple[str]] = None
 
+        self.set_transform()
         self.set_all_task()
 
     def __len__(self) -> int:
@@ -224,7 +228,8 @@ class Cifar100(data.Dataset):
         """
         if not self._only_current_flag and getattr(self, "examplar_set", None) is not None:
             if index < (l := len(self.examplar_set)):
-                return self.examplar_set.__getitem__(index)
+                idx, image, label = self.examplar_set.__getitem__(index)
+                return idx, self.transform(image), label
         else:
             try:
                 l = len(self.examplar_set)
@@ -232,7 +237,7 @@ class Cifar100(data.Dataset):
                 l = 0
         index -= l
         image, label = self.visible_image[index], self.visible_label[index]
-        return index + l, torch.from_numpy(image), torch.from_numpy(label)
+        return index + l, self.transform(torch.from_numpy(image)), torch.from_numpy(label)
 
     def set_task(self, task: Union[str, Tuple[str], None] = None):
         if task is None:
@@ -388,6 +393,16 @@ class Cifar100(data.Dataset):
         q = np.zeros(shape=(ones.shape[0], 100))
         label = np.hstack((label[:, np.newaxis], ones * -1, q)).astype(float)
         return image, label, class2idx
+    
+    def set_transform(self, transform: Union[None, nn.Module]=None):
+        if transform is None:
+            self.transform = transforms.Compose([
+                transforms.RandomCrop(size=(32, 32), padding=4),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ColorJitter(brightness=0.24705882352941178),
+                transforms.Normalize(mean=(0.5071, 0.4867, 0.4408), std=(0.2675, 0.2565, 0.2761))
+            ])
+
 
     @staticmethod
     def collate_fn(x: Tuple[torch.Tensor], y: Tuple[torch.Tensor]):
