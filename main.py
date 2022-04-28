@@ -176,8 +176,7 @@ class CLTrainer:
                     for seen_class in self.train_set.examplar_set.examplar_set.keys():
                         x = torch.from_numpy(self.train_set.examplar_set.examplar_set[seen_class]["x"])
                         x = x.to(device=self.available_device, dtype=self.default_dtype, non_blocking=True)
-                        # dereference self.net(x)
-                        q = self.net(x)[:][:,:len(self.net.seen_classes)-len(task)]
+                        q = self.net(x)[:, :len(self.net.seen_classes)-len(task)].clone()
                         self.train_set.examplar_set.update_q(class_name=seen_class, q=q)
             
             # learn new task
@@ -185,7 +184,7 @@ class CLTrainer:
             early_stop_cnt: float = 0
 
             # debug code
-            task_class = [cifar_task_setter.get_num(name) for name in task]
+            # task_class = [cifar_task_setter.get_num(name) for name in task]
             for epoch in range(n_epcoh):
                 # train
                 self.net.train()
@@ -334,6 +333,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=100, help=yellow("Set maximum training epoch of each task"))
     parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=20, help=yellow("Set maximum early stop epoch counts"))
     parser.add_argument("-tm", "--test_method", dest="test_method", type=int, default=1, help=yellow("Set test method, 0 for classify, 1 for argmax"))
+    parser.add_argument("-nt", "--num_task", dest="num_task", type=int, default=None, help=yellow("All predict class num, if set to None, will add gradually"))
     parser.add_argument("-m", "--message", dest="message", type=str, default=f"", help=yellow("Training digest"))
     return parser.parse_args()
 
@@ -350,7 +350,7 @@ if __name__ == "__main__":
     n_epoch = args.n_epoch
     early_stop = args.early_stop
     test_method = args.test_method
-    
+    num_task = args.num_task
 
     # generate task list
     if if_shuffle:
@@ -380,7 +380,7 @@ if __name__ == "__main__":
     # Bug?: 训练的过程中会缓慢的有GPU缓存泄漏  
 
     e = ExamplarSet()
-    net = iCaLRNet(num_class=100, target_dataset="Cifar100", examplar_set=e)
+    net = iCaLRNet(num_class=num_task, target_dataset="Cifar100", examplar_set=e)
     net.__fe__ += "32"
     trainer = CLTrainer(network=net, task_list=task_list, test_method=test_method, dry_run=dry_run, log=log)
     try:

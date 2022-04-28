@@ -320,7 +320,7 @@ class iCaLRNet(nn.Module):
     __name__ = "iCaLRNet"
     __fe__ = "ResNet"
 
-    def __init__(self, num_class: int, target_dataset: str, examplar_set: ExamplarSet) -> None:
+    def __init__(self, num_class: Union[None, str], target_dataset: str, examplar_set: ExamplarSet) -> None:
         """
         __init__ iCaLRNet implementation
 
@@ -349,7 +349,10 @@ class iCaLRNet(nn.Module):
         self.num_class = num_class
         self.target_dataset = target_dataset
         self.feature_extractor = _ResNetBase(target_dataset=target_dataset, num_blocks=[3, 4, 6, 3], num_class=None)
-        self.weights = nn.Linear(in_features=512,out_features=num_class, bias=False)
+        if num_class is None:
+            self.weights = nn.Linear(in_features=512,out_features=2, bias=False)
+        else:
+            self.weights = nn.Linear(in_features=512, out_features=num_class, bias=False)
         self.examplar_set = examplar_set
 
         self.seen_classes: List[str] = []
@@ -369,13 +372,18 @@ class iCaLRNet(nn.Module):
             return feature_vectores
     
     def add_task(self, task: Union[str, List[str]]):
-        self.current_task = task
-        if isinstance(task, str):
-            self.seen_classes.append(task)
-        elif isinstance(task, (list, tuple)):
-            self.seen_classes.extend(task)
-        else:
-            assert False, f"{Fore.RED}Invalid type, {type(task)}"
+        assert isinstance(task, tuple), f"{Fore.RED}Only tuple is accepted, please offer tasks like (chair, book)."
+        # extend wight and copu weights
+        current_device = self.weights.weight.device
+        current_dtype = self.weights.weight.dtype
+        origin_shape = self.weights.weight.shape
+        new_weight = nn.Linear(in_features=512, out_features=len(self.seen_classes) + len(task), bias=False).to(device=current_device, dtype=current_dtype)
+        new_weight.weight.data[:origin_shape[0], :] = self.weights.weight.data.detach()
+        del self.weights
+        self.weights = new_weight
+
+        # update task list
+        self.seen_classes.extend(task)
         return self
     
     def loss_func(self, y_pred: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -415,3 +423,8 @@ class iCaLRNet(nn.Module):
             distance = torch.sqrt(((xx - mu_all)**2).sum(dim=1))
             result.append(torch.argsort(distance))
         return torch.vstack(result)
+
+
+if __name__ == "__main__":
+    fc = nn.Linear(in_features=512, out_features=10, bias=False)
+    print(fc.weight.shape)
