@@ -383,6 +383,7 @@ class iCaLRNet(nn.Module):
         self.weights = new_weight
 
         # update task list
+        self.current_task = task
         self.seen_classes.extend(task)
         return self
     

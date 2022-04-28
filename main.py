@@ -161,6 +161,8 @@ class CLTrainer:
             self.logger.info(f"{Fore.BLUE}New Task: {task}")
             
             self.net.add_task(task=task)
+            del last_best
+            last_best = copy.deepcopy(self.net.state_dict())
             self.train_set.set_task(task=task)
 
             # Notes: renew optim and grid
