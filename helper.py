@@ -92,6 +92,7 @@ class CifarTaskSetter:
         self.num2label = dict(enumerate(self.all_class))
         _old_label2num = dict(zip(self.origin_class, range(len(self.origin_class))))
         self.old2new = {_old_label2num[name]:self.label2num[name] for name in self.origin_class}
+        return self
 
     def gen_task_list(self, num_task: int = 10) -> List[Tuple[str]]:
         task_list = []
@@ -114,6 +115,7 @@ class CifarTaskSetter:
         import random
         random.shuffle(self.all_class)
         self._gen_converter()
+        return self
     
     def get_name(self, class_num: int) -> str:
         return self.num2label[class_num]

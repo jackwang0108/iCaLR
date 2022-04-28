@@ -293,6 +293,7 @@ class Cifar100(data.Dataset):
         # set visible image and label
         self.visible_image, self.visible_label = self._image[
                                                      visible_class_idx], self._label[visible_class_idx]
+        return self
 
     def _load(self, train_val_ratio: float, refresh: bool) -> Tuple[np.ndarray, np.ndarray, Dict[int, np.ndarray]]:
         # same as normal classification
