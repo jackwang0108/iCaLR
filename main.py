@@ -7,6 +7,7 @@ Notes:
         3. 数据集中尽量使用np.ndarray, 然后可以用上torchvision.transforms
         4. 写完了之后, 多用用logging, 便于保留每一次训练结果
         5. 图像的任务一定要用一些基本的数据增强, 提点非常恐怖, 测试阶段则要看原文用的什么
+        6. 对于CL来说, 每一个任务的学习都和普通任务的学习一样, 除了模型是旧的, 其他的一切, 优化器, 数据集, 等等都要是新的, 这样才减少错误
 """
 
 # Torch Library
@@ -114,13 +115,13 @@ class CLTrainer:
                 f.seek(0)
                 f.write("".join(lines[:-1]))
 
-    def train(self, n_epcoh: int = 70, early_stop: int = 20, bsize: int = 128):
+    def train(self, messgae: str = "", n_epcoh: int = 70, early_stop: int = 20, bsize: int = 128):
         task_list = self.train_list
         test_method = self.test_method
 
-
         loss_func = "Other Implementation Loss Func" if self.net.loss_func_type == 1 else "My Implementation Loss Func"
         self.logger.info(f"loss_func: {loss_func}")
+        self.logger.info(f"Training Digest: {messgae}")
         self.logger.info(f"n_epoch: {n_epcoh}")
         self.logger.info(f"early_stop: {early_stop}")
         self.logger.info(f"task_list: {task_list}")
@@ -167,6 +168,7 @@ class CLTrainer:
             del last_best
             last_best = copy.deepcopy(self.net.state_dict())
             self.train_set.set_task(task=task)
+            self.net.examplar_set.set_task(task=task)
 
             # Notes: renew optim and grid
             self.optim = optim.Adam(self.net.parameters())
@@ -289,13 +291,14 @@ class CLTrainer:
             # Attention: construct examplar set, Algorithm 4: iCaRL CONSTRUCTEXEMPLARSET
             seen_class_num = len(self.net.examplar_set.examplar_set.keys()) + len(task)
             # Bug: Exmaplar Set, task_idx = 3, 没有can, fixed
-            self.train_set.examplar_set.construct_examplar_set(phi=self.net, m=2000 // seen_class_num)
+            # Bug: add batch 里要去除旧的数据
+            self.train_set.examplar_set.construct_examplar_set(phi=self.net, m=2000 // seen_class_num, logger=self.logger)
 
             # Attention: reduce examplar set, Algorithm 5: iCaRL REDUCEEXEMPLARSET
             self.train_set.examplar_set.reduce_examplar_set(m = 2000 // seen_class_num)
             
 
-            # test cl performance
+            # test cl performance, 测试部分问题很大
             task_acc = []
             for past_task_idx, past_task in enumerate(task_list[:task_idx+1]):
                 p_all_num = 0
@@ -313,7 +316,7 @@ class CLTrainer:
                         p_all_num += len(y)
                         p_acc_num += sum(y[:, 0] == y_classify[:, 0]).item()
                 task_acc.append(p_acc_num / p_all_num)
-                self.logger.info(f"{Fore.YELLOW}Past Task: [{past_task_idx:>{task_idx}}|{past_task}], Acc: {task_acc[-1]:>.5f}")
+                self.logger.info(f"{Fore.MAGENTA}Past Task: [{past_task_idx:>{task_idx}}|{past_task}], Acc: {task_acc[-1]:>.5f}")
             acc = sum(task_acc) / len(task_acc)
             self.logger.info(f"{Fore.MAGENTA}After Task: [{task_idx:>{t_digit}}|{task}], CL_Acc: {acc:>.5f}")
 
@@ -338,9 +341,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-d", "--dry_run", dest="dry_run", default=False, action="store_true", help=green("If run without saving tensorboard amd network params to runs and checkpoints"))
     parser.add_argument("-l", "--log", dest="log", default=False, action="store_true", help=green("If save terminal output to log"))
     parser.add_argument("-n", "--num_class", dest="num_class", type=int, default=2, help=yellow("Set class number of each task"))
-    parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=100, help=yellow("Set maximum training epoch of each task"))
-    parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=20, help=yellow("Set maximum early stop epoch counts"))
-    parser.add_argument("-tm", "--test_method", dest="test_method", type=int, default=1, help=yellow("Set test method, 0 for classify, 1 for argmax"))
+    parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=200, help=yellow("Set maximum training epoch of each task"))
+    parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=40, help=yellow("Set maximum early stop epoch counts"))
+    parser.add_argument("-tm", "--test_method", dest="test_method", type=int, default=1, help=yellow("Set test method during training, 0 for classify, 1 for argmax"))
     parser.add_argument("-nt", "--num_task", dest="num_task", type=int, default=None, help=yellow("All predict class num, if set to None, will add gradually"))
     parser.add_argument("-lf", "--loss_func", dest="loss_func", type=int, default=0, help=yellow("Select loss function type, 1 for other implementation, 0 for my implementation"))
     parser.add_argument("-m", "--message", dest="message", type=str, default=f"", help=yellow("Training digest"))
@@ -361,6 +364,8 @@ if __name__ == "__main__":
     test_method = args.test_method
     num_task = args.num_task
     loss_func_type = args.loss_func
+    messgae = args.message
+    
 
     # generate task list
     if if_shuffle:
@@ -395,7 +400,7 @@ if __name__ == "__main__":
     trainer = CLTrainer(network=net, task_list=task_list, test_method=test_method, dry_run=dry_run, log=log)
     try:
         deled = False
-        net = trainer.train(n_epcoh=n_epoch, early_stop=early_stop)
+        net = trainer.train(n_epcoh=n_epoch, early_stop=early_stop, messgae=messgae)
     except KeyboardInterrupt:
         deled = True
         del trainer, net

@@ -1,4 +1,5 @@
 # Standard Library
+import logging
 import pickle
 from typing import *
 
@@ -33,6 +34,7 @@ class ExamplarSet(data.Dataset):
         # self.examplar_set["fish"]["x"]
         # self.examplar_set["fish"]["y"]
         self._temp_data: Dict[str, Dict[str, np.ndarray]] = {}
+        self.current_task: Union[None, Tuple[str]] = None
 
     def __len__(self):
         # length = sum(self._length_list)
@@ -57,13 +59,12 @@ class ExamplarSet(data.Dataset):
     def add_batch(self, x: torch.Tensor, y: torch.Tensor) -> None:
         x = x.detach().cpu().numpy()
         y = y.detach().cpu().numpy()
-        labels = np.unique(y[:, 0])
-        # labels = torch.unique(y[:, 0])
-        for sub_label in labels:
+        current_task_num = [cifar_task_setter.get_num(name) for name in self.current_task]
+        for sub_label in current_task_num:
             # idx = torch.where(y[:, 0] == sub_label)[0].tolist()
             idx = np.where(y[:, 0] == sub_label)[0].tolist()
             # if self._temp_data.get(s := cifar100_num2label[sub_label.item()], None) is not None:
-            if (s := cifar_task_setter.get_name(sub_label.item())) in self._temp_data.keys():
+            if (s := cifar_task_setter.get_name(sub_label)) in self._temp_data.keys():
                 self._temp_data[s]["x"] = np.concatenate(
                     [self._temp_data[s]["x"], x[idx]], axis=0
                 )
@@ -82,13 +83,17 @@ class ExamplarSet(data.Dataset):
                 # t_dict["y"] = y[idx].clone().detach()
                 self._temp_data[s] = t_dict
 
+    def set_task(self, task: Tuple[str]):
+        assert isinstance(task, tuple), f"{Fore.RED}Task should be tuple, but received: {type(task)}"
+        self.current_task = task
+
     def reduce_examplar_set(self, m):
         for class_name in self.examplar_set.keys():
             self.examplar_set[class_name]["x"] = self.examplar_set[class_name]["x"][:m, :]
             self.examplar_set[class_name]["y"] = self.examplar_set[class_name]["y"][:m, :]
 
     @torch.no_grad()
-    def construct_examplar_set(self, phi: 'iCaLRNet', m: int, temp: bool = False) -> Union[None, Dict[str, torch.Tensor]]:
+    def construct_examplar_set(self, phi: 'iCaLRNet', m: int, temp: bool = False, logger: Union[logging.Logger, None] = None) -> Union[None, Dict[str, torch.Tensor]]:
         label_feature: Dict[str, torch.Tensor] = {}
 
         p = next(phi.parameters())
@@ -96,7 +101,11 @@ class ExamplarSet(data.Dataset):
 
         if temp:
             t = {}
-        for sub_label in self._temp_data.keys():
+        for sub_label in self.current_task:
+            if logger is not None:
+                logger.info(f"{Fore.YELLOW}Building Examplar Set: {sub_label}, saving {m} examples, K={self.k}")
+            else:
+                print(f"{Fore.YELLOW}Building Examplar Set: {sub_label}, saving {m} examples, K={self.k}")
             x = torch.from_numpy(self._temp_data[sub_label]["x"]).to(device=device, dtype=dtype)
             label_feature[sub_label] = phi.feature_extractor(x).cpu()
             # label_feature[sub_label] = phi.feature_extractor(self._temp_data[sub_label]["x"])
