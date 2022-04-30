@@ -370,7 +370,7 @@ if __name__ == "__main__":
     # generate task list
     if if_shuffle:
         cifar_task_setter.shuffle()
-    task_list = cifar_task_setter.gen_task_list()
+    task_list = cifar_task_setter.gen_task_list(num_task=num_class_per_task)
 
     # Bug?: 在训练到后面的任务的时候, cl的平均acc就成0了. Fixed
     # Notes: Bug 发生的原因

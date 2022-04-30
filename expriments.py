@@ -16,6 +16,6 @@ def runs(num_class: int, message):
 
 if __name__ == "__main__":
     # runs(num_class=10, message=f"Task Length 10, Debug RUN")
-    for num_class in [2, 5, 10, 20, 50]:
-        for run_idx in range(1, 11, 1):
+    for num_class in [5, 20, 50]:
+        for run_idx in range(1, 3, 1):
             runs(num_class=num_class, message=f"Task Length {num_class} Run {run_idx}")
