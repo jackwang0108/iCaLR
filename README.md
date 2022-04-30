@@ -28,20 +28,20 @@ The **first** thing you need to do is make a soft link to `Cifar100` datasets un
 
 For me, it is
 
-- Windows
+- Windows (Command Prompt)
 
-```shell
-C:\Users\JackWang\Projects\iCaRL> mkdir datasets
-C:\Users\JackWang\Projects\iCaRL> cd datasets
-C:\Users\JackWang\Projects\iCaRL> mklink /D cifar100-windows <path-to-cifar100>
+```powershell
+mkdir datasets
+cd datasets
+mklink /D cifar100-windows <path-to-cifar100>
 ```
 
 - Ubuntu
 
 ```shell
-jack@Jack:~\Projects\iCaRL$ mkdir datasets
-jack@Jack:~\Projects\iCaRL$ cd datasets
-jack@Jack:~\Projects\iCaRL$ ln -s cifar100-linux <path-to-cifar100>
+mkdir datasets
+cd datasets
+ln -s cifar100-linux <path-to-cifar100>
 ```
 
 Then, the **second** steps is run the command below,
@@ -53,7 +53,8 @@ python3 main.py -h
 and you will see help information.
 
 ```shell
-PS C:\Users\22321\projects\iCaLR>  & 'C:\Users\22321\anaconda3\envs\torch\python.exe' .\main.py -h
+jack@jack:~\projects\iCaLR$ python .\main.py -h
+
 usage: main.py [-h] [-v] [-s] [-d] [-l] [-n NUM_CLASS] [-ne N_EPOCH] [-es EARLY_STOP] [-tm TEST_METHOD]
                [-nt NUM_TASK] [-lf LOSS_FUNC] [-m MESSAGE]
 
@@ -84,9 +85,13 @@ optional arguments:
 
 
 
+Or, you can modify the `experiments.py` to automatically run the main experiment (num_task = 2, 5, 10, 20, 50) in the paper.
+
+
+
 ## Results
 
-Notes: I tried my best to re-implement all the details in the paper and I believe my operation are correct. However, due to the difference in evaluation method, there is still performance gap between my result and original result.
+Notes: I tried my best to re-implement all the TRAINING details in the paper and I believe my operation are correct. However, due to the difference in evaluation method, there is still performance gap between my result and original result.
 
 Moreover, I find a [repository](https://github.com/DRSAD/iCaRL/tree/9768d45a86d7b43acfcf539ad84ae6d88f47d9e7 "repository") which totally re-implements all operations including the evaluation method. But after reviewing the codes, I find some KEY STEPS in the evaluation that I do not think is objective. So, I decide not to re-implement the biased performance code.
 
@@ -96,11 +101,33 @@ The biased performance evaluation code and the reason why I think they are biase
 
 
 
+You can find all the training results in `./runs` and `./log`.
+
+Run
+
+```shell
+tensorboard --logdir ./runs
+```
+
+to check all the results. More detailed training results and log can be found in `./log`.
+
+
+
+Since all of the parameters in `checkpoints` is so large (~50G), I'm not going to upload the parameters. You can get the parameter by runing
+
+```python
+python main.py -l -n NUM_TASK
+```
+
+The log, parameter and tensorboard results will be saved in `./checkpoints`, `./log` and `./runs`
+
+
+
 ### Bias Evaluation
 
 1. I think one should evaluate the performance on all past classes in all past tasks. However, the code in DRSAD's repository only test on new task after learning a new task.
 2. The testing code used multiple data augmentation methods, but I don't think it should be done to get a really fancy result since other method may not do this.
-3. The training codes, the loss function in the repository mismatch the loss function in the paper. In detail, the distillation loss should only be applied on old classes, instead of all class.
+3. The training codes, the loss function in the repository mismatch the loss function in the paper. In detail, the distillation loss should only be applied on old classes, instead of all class in DRSAD's repository.
 
 
 
@@ -109,4 +136,9 @@ The biased performance evaluation code and the reason why I think they are biase
 
 Since the codes use some tricks to realize the algorithms, some key points in the code will be illustrated in both Chinese and English Version.
 
-Coming Soon...
+Some major points:
+
+- Distillation loss: BCELoss (Binary Cross Entropy Loss)
+- Weight Vector: Linear Layer
+
+More detailed explanation is coming...
