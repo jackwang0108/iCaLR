@@ -1,6 +1,4 @@
 .idea
 .vscode
-logs/
-runs/
 checkpoints/
 __pycache__
