@@ -91,6 +91,8 @@ Or, you can modify the `experiments.py` to automatically run the main experiment
 
 ## Results
 
+New: `BUG`s find! The reason of why the result is not goold is simply because I didn't train the network well. More expriment are coming soon.
+
 Notes: I tried my best to re-implement all the TRAINING details in the paper and I believe my operation are correct. However, due to the difference in evaluation method, there is still performance gap between my result and original result.
 
 Moreover, I find a [repository](https://github.com/DRSAD/iCaRL/tree/9768d45a86d7b43acfcf539ad84ae6d88f47d9e7 "repository") which totally re-implements all operations including the evaluation method. But after reviewing the codes, I find some KEY STEPS in the evaluation that I do not think is objective. So, I decide not to re-implement the biased performance code.
